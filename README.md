@@ -64,6 +64,185 @@ Java中如何创建线程？
 > - `TIMED_WAITING`：**超时等待状态**，获得锁调用对象的`obj.wait(timeout)`方法，或者`Thread.sleep(timeout)`方法
 > - `TERMINATED`：**终止状态**，线程`run`方法执行结束
 
+线程安全要考虑的三个方面？
+
+> 1. **可见性**：一个线程对共享变量的修改，对其它线程都立即可见
+> 2. **有序性**：一个线程内代码按编码顺序执行
+> 3. **原子性**：一个线程内多行代码以一个整体运行，器间不能有其它线程的代码插队
+
+volatile关键字？
+
+> 在Java中，`volatile`关键字可以保证变量的**可见性**，声明为`volatile`的变量，表明它共享且不稳定，每次使用它都到主存中读取。**一个线程对其的修改，其它线程都立即可见**。
+>
+> **有序性**：将声明为`volatile`的变量进行读写操作时，会通过插入特定的内存屏障，禁止JVM指令重排序。
+>
+> `volatile`关键字并不能保证原子性，问题出现在：
+>
+> 1. java中的一条指令，翻译成字节码可能是多条
+> 2. 多线程运行下，多条指令发生交错的问题
+>
+> ```java
+> class AddAndSubtract {
+>     static volatile int balance = 10;
+>     
+>     public static add() {
+>         // 字节码指令：
+>         // getstatic
+>         // iconst_5
+>         // iadd
+>         // putstatic
+>         balance += 5;
+>     }
+>     
+>     public static subtract() {
+>          // 字节码指令：
+>         // getstatic
+>         // iconst_5
+>         // isub
+>         // putstatic
+>         balance -= 5;
+>     }
+>     
+>     public static void main(String[] args) {
+>         CountDownLatch latch = new CountDownLatch(2);
+>         new Thread(() -> {
+>             add();
+>             latch.countDown();
+>         }).start();
+>         
+>         new Thread(() -> {
+>             subtract();
+>             latch.countDown();
+>         }).start();
+>         latch.await();
+>         // 结果可能有：10, 5, 15
+>         System.out.println(balance);
+>     }
+> }
+> ```
+
+`volatile`保证有序性的原理？
+
+> `volatile`修饰变量会对其读/写分别加不同的屏障
+>
+> - 对`volatile`修饰的变量写，**写屏障阻止之前的代码重排序到写操作之后**
+> - 对`volatile`修饰的变量读，**读屏障阻止之后的代码重排序到读操作之前**
+>
+> 结论：写变量时，要把`volatile`修饰的变量放在最后写；读变量时放在最前
+>
+> ```java
+> class MemoryFence {
+>     int x;
+>     volatile int y;
+>     
+>     // 对volatile修饰的变量写，写屏障阻止之前的代码重排序到写操作之后
+>     public void test1() {
+>         x = 1;
+>         // ^^^^^^^^
+>         // --------
+>         y = 1;
+>     }
+>     
+>     // 对volatile修饰的变量读，读屏障阻止之后的代码重排序到读操作之前
+>     public void test2(Record r) {
+>         r.r1 = y;
+>         // --------
+>         // vvvvvvvv
+>         r.r2 = x;
+>     }
+>     
+>     class Record {
+>         int r1;
+>         int r2;
+>     }
+> }
+> ```
+
+Java中的悲观锁与乐观锁？
+
+> 1. **悲观锁**的代表是`syncronized`和`Lock`锁
+>    - 核心思想：**线程只有占有了锁，才能去操作共享变量，每次只有一个线程占锁成功，获取锁失败的线程都需要阻塞等待**。
+>    - 缺点：**线程从运行到阻塞，再从阻塞到唤醒，涉及线程上下文切换，如果频繁发生，影响性能**
+>    - 实际上，线程在获取`synchronized`和`Lock`锁事，如果锁已被占用，都会做几次**重试**操作，减少阻塞的机会
+> 2. **乐观锁**的代表是`AtomicInteger`，使用`cas`来保证原子性
+>    - 核心思想：**无需加锁，每次只有一个线程能成功修改共享变量，其它失败的线程不需要停止，不断重试直至成功**
+>    - 由于线程一直运行，不需要阻塞，因此不涉及线程上下文切换
+>    - 需要多核`cpu`支持，且线程数不应超过`cpu`核数
+>    - 缺点：
+>      - **ABA问题**：共享变量中间被其它线程修改过，只是后来又被改回了原值。解决思路：在变量前面追加版本号或者时间戳，只有当变量值和时间戳都相等时，才更新。
+>      - **循环时间长开销大**：CAS经常会用到自旋操作来进行重试，如果长时间不成功，会给CPU带来非常大的执行开销。
+>      - 只能保证一个共享变量的原子操作：JDK1.5开始，提供了`AtomicReference`类，保证引用对象之间的原子性。可以通过将多个变量封装在一个对象中，使用`AtomicReference`来执行CAS操作。
+>
+> ```java
+> // 自定义实现 `AtomicInteger`
+> class MyAtomicInteger {
+> 
+>     // 提供底层的CAS操作
+>     private static final Unsafe U;
+> 
+>     // 获取value字段的偏移量
+>     private static final long valueOffset;
+> 
+>     static {
+>         U = UnsafeUtil.getUnsafe();
+>         try {
+>             valueOffset = U.objectFieldOffset(MyAtomicInteger.class.getDeclaredField("value"));
+>         } catch (NoSuchFieldException e) {
+>             throw new RuntimeException(e);
+>         }
+>     }
+> 
+>     // CAS需要与volatile配合使用，保证变量的可见性
+>     private volatile int value;
+> 
+>     public int incrementAndGet() {
+>         int o, n;
+>         for (; ; ) {
+>             o = value;
+>             n = o + 1;
+>             if (U.compareAndSwapInt(this, valueOffset, o, n)) {
+>                 break;
+>             }
+>         }
+>         return n;
+>         // return U.getAndAdd(this, valueOffset, 1) + 1;
+>     }
+> 
+>     public int getAndIncrement() {
+>         int o, n;
+>         for (; ; ) {
+>             o = value;
+>             n = o + 1;
+>             if (U.compareAndSwapInt(this, valueOffset, o, n)) {
+>                 break;
+>             }
+>         }
+>         return o;
+>         // return U.getAndAdd(this, valueOffset, 1);
+>     }
+> 
+>     public int intValue() {
+>         return value;
+>     }
+> 
+>     public static void main(String[] args) throws InterruptedException {
+>         MyAtomicInteger i = new MyAtomicInteger();
+>         Thread t1 = new Thread(() -> {
+>             for (int j = 0; j < 10000; j++) {
+>                 i.incrementAndGet();
+>             }
+>         });
+>         t1.start();
+>         t1.join();
+>         System.out.println(i.intValue());
+>     }
+> }
+> ```
+>
+> 
+
+
+
 ### 3. JVM
 
 虚拟机栈和本地方法栈为什么是私有的？
@@ -79,6 +258,8 @@ Java中如何创建线程？
 >
 > - 堆是进程中最大的一块内存，主要用于存放新创建的对象
 > - 方法区主要用于存放已被加载的类信息、常量、静态变量、即使编译器编译后的代码等。
+
+### 4. 设计模式
 
 
 
@@ -96,7 +277,6 @@ Spring是如何解决循环依赖的？
 >
 > 三级缓存指的是Spring在创建Bean的过程中，通过三级缓存来缓存正在创建的Bean，以及已经完成的Bean实例。
 >
-> 
 
 ## MySQL
 
