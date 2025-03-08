@@ -17,8 +17,8 @@ Java动态代理？
 
 > 在运行时动态生成代理对象，增强目标对象的方法
 >
-> 1. JDK动态代理：基于接口实现，被代理类需要实现一个或多个接口。JDK在运行时生成实现指定接口的代理类，并通过`InvocationHandler`拦截并增强方法调用。
-> 2. CGLIB动态代理：基于继承实现，在运行时生成代理类的子类，通过`MethodInterceptor`拦截目标方法并增强
+> 1. **JDK动态代理：基于接口实现，被代理类需要实现一个或多个接口**。JDK在运行时生成实现指定接口的代理类，并通过`InvocationHandler`拦截并增强方法调用。
+> 2. **CGLIB动态代理：基于继承实现，在运行时生成代理类的子类**，通过`MethodInterceptor`拦截目标方法并增强
 
 ### 1. 集合
 
@@ -31,14 +31,54 @@ Java动态代理？
 > **进程就是程序的一次执行过程，是系统运行程序的基本单位**。在Java中，启动main函数时就启动了一个JVM的进程，而main函数所在的线程就是这个进程中的一个线程，也称主线程。
 >
 > 线程是一个比进程更小的执行单位。一个进程在执行过程中可以产生多个线程。同一个进程中的多个线程共享进程的堆和方法区资源，每个线程又有自己私有的程序计数器、虚拟机栈和本地方法栈。
+>
+> - 进程是程序的一次执行实例，拥有独立的内存空间和系统资源。资源分配的基本单位，独立运行。
+> - 线程是进程内的一个执行单元，共享进程的内存和资源。CPU调度的基本单位，共享进程资源。
+>
+> 一个Java进程中，有`main`线程（程序入口）、`Reference Handler`（清除`reference`线程）、`Finalizer`（调用对象`finalize`方法的线程）、`Sigal Dsipatcher`（分发处理给`JVM`信号的线程）、`Attach Listener`（添加事件）
+
+Java线程和操作系统的线程有啥区别？
+
+> JDK1.2之前，Java线程是基于**绿色线程**（`Green Threads`）实现的，这是一种用户级线程，不依赖于操作系统。
+>
+> JDK1.2及以后，Java线程改为基于**原生线程**(`Native Threads`)实现，JVM直接使用操作系统原生的内核级线程（内核线程）来实现Java线程，由操作系统内核进行线程的调度和管理。
 
 僵尸线程？
 
+> 
 
+Java中如何创建线程？
+
+> 1. 继承`Thread`类
+> 2. 实现`Runnable`接口
+> 3. 实现`Callable`接口
+
+线程的生命周期和状态？
+
+> Java线程有6中不同的状态：
+>
+> - `NEW`：**初始状态**，线程被创建出来但还没有调用`start()`
+> - `RUNNABLE`：**运行状态**，调用线程`start()`，可以运行/获得时间片正在运行状态
+> - `BLOCKED`：**阻塞状态**，竞争锁失败后的状态
+> - `WAITING`：**等待状态**，获取锁成功后，调用对象的`obj.wait()`方法，释放对象锁并进入`waiting`状态
+> - `TIMED_WAITING`：**超时等待状态**，获得锁调用对象的`obj.wait(timeout)`方法，或者`Thread.sleep(timeout)`方法
+> - `TERMINATED`：**终止状态**，线程`run`方法执行结束
 
 ### 3. JVM
 
+虚拟机栈和本地方法栈为什么是私有的？
 
+> - 虚拟机栈：每个Java方法在执行之前会创建一个栈帧用于存储局部变量表、操作数栈、常量池引用等信息。从方法调用直至方法完成的过程，就对应着一个栈帧在Java虚拟机栈中入栈和出栈的过程。
+> - 本地方法栈：和虚拟机栈发挥着类似的作用，区别是是虚拟机栈为虚拟机执行Java方法（也就是字节码）服务，而本地方法栈则为虚拟机栈使用到的`Nativa`方法服务。
+>
+> **为了保证线程中的局部变量不被别的线程访问到，虚拟机栈和本地方法栈是线程私有的。**
+
+一句话简单连接堆和方法区？
+
+> 堆和方法区是所有线程共享的资源。
+>
+> - 堆是进程中最大的一块内存，主要用于存放新创建的对象
+> - 方法区主要用于存放已被加载的类信息、常量、静态变量、即使编译器编译后的代码等。
 
 
 
@@ -715,6 +755,9 @@ class Solution {
 
 #### 322. 零钱兑换
 
+- 完全背包
+- 恰好达到容量的最小值
+
 ```java
 class Solution {
     public int coinChange(int[] coins, int amount) {
@@ -735,6 +778,9 @@ class Solution {
 
 #### 279. 完全平方数
 
+- 完全背包
+- 恰好达到容量的最小值
+
 ```java
 class Solution {
     
@@ -745,9 +791,35 @@ class Solution {
         dp[0] = 0;
         for (int i = 1; i <= n; i++) {
             for (int j = 1; j * j <= i; j++) {
+                // 这里可以不用if判断，因为 dp[i] 一定可以有 i 个 1^2 组成
                 if (dp[i - j] != Integer.MAX_VALUE) {
                     dp[i] = Math.min(dp[i], dp[i - j * j] + 1);
                 }
+            }
+        }
+        return dp[n];
+    }
+}
+```
+
+#### 139. 单词拆分
+
+```java
+class Solution {
+    public boolean wordBreak(String s, List<String> wordDict) {
+        int n = s.length();
+        boolean[] dp = new boolean[n + 1];
+        dp[0] = true;
+
+        for (int i = 1; i <= n; i++) {
+            for (String word : wordDict) {
+                int m = word.length();
+                if (m <= i) {
+                    dp[i] |= word.equals(s.substring(i - m, i)) && dp[i - m];
+                }
+            }
+            if (dp[n]) {
+                return true;
             }
         }
         return dp[n];
