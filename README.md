@@ -241,6 +241,152 @@ Java中的悲观锁与乐观锁？
 >
 > 
 
+<font color="red" size=5>ThreadLocal原理？</font>
+
+> 1. `ThreadLocal`可以实现资源对象的线程隔离，让每个线程各用各的资源对象，避免争用引发的线程安全问题
+> 2. `TreadLocal`同时实现了线程内的资源共享
+>
+> **ThreadLocal原理：每个线程内有一个`ThreadLocalMap`类型的<font color="red">成员变量</font>，用来存储资源对象**
+>
+> 1. 调用`set`方法，就是以`ThreadLocal`自己作为`key`，资源对象作为`value`，放入当前线程的`ThreadLocalMap`集合中
+> 2. 调用`get`方法，就是以`ThreadLocal`自己作为`key`，到当前线程中查找关联的资源值
+> 3. 调用`remove`方法，就是以`ThreadLocal`自己作为`key`，移除当前线程关联的资源值
+>
+> `ThreadLocalMap`是`ThreadLocal`中的一个静态内部类：
+>
+> - 以`ThreadLocal`作为`key`，共享数据作为`value`
+> - 初始容量是`16`，扩容因子是`2/3`，容量始终为2的幂
+> - 当产生哈希冲突时通过**开放寻址法**，找下一个空闲位置放入
+> - **索引计算**：第一个`key`的下标索引是0，以后每次索引加一个固定值`0x61c88647`，然后通过`hash & (len - )`获得索引位置。
+
+`ThreadLocal`内存泄露问题是怎么导致的？
+
+> ```java
+> // ThreadLocalMap 中 Entry 的 key 是弱引用，value 是强引用
+> static class Entry extends WeakReference<ThreadLocal<?>> {
+>     /** The value associated with this ThreadLocal. */
+>     Object value;
+> 
+>     Entry(ThreadLocal<?> k, Object v) {
+>         // key是弱引用：如果ThreadLocal实例不再被任何强引用指向，垃圾回收器会在下次GC时回收该实例，导致ThreadLocalMap中对应的key变为null
+>         super(k);
+>         // value是强引用：ThreadLocalMap中的value是强引用。即使key被回收（变为null），value仍然存在于ThreadLocalMap中，被强引用，不会被回收
+>         value = v;
+>     }
+> }
+> ```
+>
+> **当`ThreadLocal`实例失去引用后，其对应的value仍然存在于`ThreadLocalMap`中，因为`Entry`对象前引用了它。如果线程持续存在（例如线程池中的线程），`ThreadLocalMap`也会一直存在，导致key为null的entry无法被垃圾回收，就会造成内存泄露**
+>
+> 如何避免内存泄露的发生？
+>
+> 1. **在使用完`ThreadLocal`后，务必调用`remove()`方法。`remove()`方法会从`ThreadLocalMap`中显式地移除对应地`entry`，彻底解决内存泄露地风险。**
+> 2. 在线程池等线程复用的场景下，使用 `try-finally` 块可以确保即使发生异常，`remove()` 方法也一定会被执行。
+
+`ThreadLocalMap`中的`value`的释放时机？
+
+> 1. <font color="green">当其它地方不再强引用`ThreadLocal`时</font>，因为`ThreadLocalMap`中作为`key`的`ThreadLocal`是弱引用，下次垃圾回收`GC`时就会被清除`null`。但是其对应的`value`是强引用，释放时机有：
+>    1. 下次获取`key`时发现`null`的`key`
+>    2. `set`的`key`时，会使用启发式扫描，清除临近`null`的`key`，启发次数与元素个数，是否发现`null`的`key`有关
+> 2. <font color="green">一般使用`ThreadLocal`时都是使用静态变量`private static final ThreadLocal<?> tl = new ThreadLocal<>();`</font>，静态变量一直对它保持强引用
+>    1. `remove`时（推荐），因为一般使用`ThreadLocal`时都是把它作为静态变量，因此`GC`无法回收
+
+<font color="red" size=6>线程池</font>
+
+线程池就是管理一系列线程地资源池。当有任务要处理时，直接从线程池中获取线程来处理，处理完成之后线程并不会立即销毁，而是等待下一个任务。线程池的好处：
+
+- 降低资源消耗。通过重复利用已创建的线程降低线程创建和销毁造成的消耗
+- 提高响应速度。当任务达到时，任务可以不需要等待线程创建就能立即执行
+- 提高线程的可管理性。线程是稀缺资源，如果无限制的创建，不仅会消耗系统资源，还会降低系统的稳定性，使用线程池可以进行统一的分配，调优和监控。
+
+如何创建线程池？
+
+> 1. 通过`ThreadPoolExecutor`构造函数来创建（推荐）
+> 2. 通过`Executor`框架的工具类`Executors`来创建。（不建议使用）
+>    1. `FixedThreadPool`：**固定线程数量的线程池**。
+>    2. `SingleThreadExecutor`：**只有一个线程的线程池**。
+>       1. 前两个使用的是有界阻塞队列是`LinkedBlockingQueue`，其任务队列的最大长度为`Integer.MAX_VALUE`，可能堆积大量的请求，从而导致OOM
+>    3. `CachedThreadPool`：**可根据实际情况调整线程数量的线程池**。
+>       1. 使用的是同步队列`SynchronousQueue`，允许创建的线程数量为`Integer.MAX_VALUE`，如果任务数量过多且执行速度较慢，可能会创建大量的线程，从而导致OOM
+>    4. `ScheduledThreadPool`：给定的延迟后运行任务或者定期执行任务的线程池。
+>       1. 使用的无界的延迟阻塞队列`DelayWorkQueue`，任务队列最大长度为`Integer.MAX_VALUE`，可能堆积大量的请求，从而导致OOM
+>
+> ```java
+> // 有界队列 LinkedBlockingQueue
+> public static ExecutorService newFixedThreadPool(int nThreads) {
+> 
+>     return new ThreadPoolExecutor(nThreads, nThreads,0L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue<Runnable>());
+> 
+> }
+> 
+> // 无界队列 LinkedBlockingQueue
+> public static ExecutorService newSingleThreadExecutor() {
+> 
+>     return new FinalizableDelegatedExecutorService (new ThreadPoolExecutor(1, 1,0L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue<Runnable>()));
+> 
+> }
+> 
+> // 同步队列 SynchronousQueue，没有容量，最大线程数是 Integer.MAX_VALUE`
+> public static ExecutorService newCachedThreadPool() {
+> 
+>     return new ThreadPoolExecutor(0, Integer.MAX_VALUE,60L, TimeUnit.SECONDS,new SynchronousQueue<Runnable>());
+> 
+> }
+> 
+> // DelayedWorkQueue（延迟阻塞队列）
+> public static ScheduledExecutorService newScheduledThreadPool(int corePoolSize) {
+>     return new ScheduledThreadPoolExecutor(corePoolSize);
+> }
+> public ScheduledThreadPoolExecutor(int corePoolSize) {
+>     super(corePoolSize, Integer.MAX_VALUE, 0, NANOSECONDS,
+>           new DelayedWorkQueue());
+> }
+> ```
+>
+> 
+
+<font color="red" size=6>线程池常见参数有哪些？</font>
+
+```java
+public ThreadPoolExecutor(
+						int corePoolSize, // 线程池的核心线程数量
+    					int maximumPoolSize, // 线程池的最大线程数
+    					long keepAliveTime, // 当线程数大于核心线程数时，多余空闲线程存活时间
+    					TimeUnit unit, // 时间单位
+    					BlockingQueue<Runnable> workQueue, // 任务队列，用来存储等待执行任务的队列
+    					ThreadFactory threadFactory, // 线程工厂，用来创建线程，一般默认即可
+    					RejectedExecutionHandler handler // 拒绝策略，当提交的任务过多而不能及时处理时，可以定制策略来处理任务
+						) {
+    
+}
+```
+
+> `ThreadPoolExecutor`的重要参数：
+>
+> - `corePoolSize`：任务队列未达到队列容量时，最大可以同时运行的线程数量
+> - `maximumPoolSize`：任务队列中存放的任务达到队列容量时，当前可以同时运行的线程数量变为最大线程数
+> - `workQueue`：新任务来的时候会先判断当前运行的线程数量是否达到核心线程数，如果达到的话，新任务就会被存放在队列中。
+>
+> `ThreadPoolExecutor`其它常见参数：
+>
+> - `keepAliveTime`：当线程池中的线程数量大于`corePoolSize`，即有非核心线程时，这些非核心线程空闲后不会立即摧毁，而是会等待，直到等待的时间超过了`keepAliveTime`才会被回收销毁
+> - `unit`：`keepAliveTime`参数的时间单位
+> - `threadFactory`：`executor`创建新线程时会用到
+> - `handler`：决绝策略
+
+<font color="red" size=5>线程池的拒绝策略有哪些</font>
+
+如果当前同时运行的线程数量达到最大线程数量并且队列也已经被放满了任务时，`ThreadPoolExecutor`定义一些策略：
+
+- `ThreadPoolExecutor.AbortPolicy`：**抛出`RejectedExecutionException`来拒绝新任务的处理。**（<font color="green">默认</font>）
+- `ThreadPoolExecutor.CallerRunsPolicy`：**调用执行者自己的线程运行任务，也就是直接在调用`execute`方法的线程中运行（`run`）被决绝的任务，如果执行程序已关闭，则丢弃该任务。**
+- `ThreadPoolExecutor.DiscardPolicy`：**不处理新任务，直接丢弃。**
+- `ThreadPoolExecutor.DiscardOldestPolicy`：此策略就**丢弃最早的未处理的任务请求。**
+
+
+
+
+
 
 
 ### 3. JVM
@@ -474,11 +620,63 @@ MySQL事务隔离级别具体是如何实现的？
 
 **可重复读是如何工作的？**
 
-> **可重复读隔离级别是启动事务时生成一个`Read View`，然后整个事务器间都在使用这个`Read View`**
+> **可重复读隔离级别是启动事务时生成一个`Read View`，然后整个事务器间都在使用这个`Read View`**。
+>
+> **当读取到的记录的`trx_id`在`m_ids`中时，说明该记录是由未提交的事务生成的，事务不会读取这个版本的记录。而是沿着`undo log`链条往下找旧版本的记录，直到找到`trx_id`小于事务的`Read View`中的`min_trx_id`值得第一条记录。**
 
 **读提交是如何工作的？**
 
 > **读提交事务隔离级别是在每次读取数据时，都会生成一个新的`Read View`。**
+
+什么是**幻读**？
+
+> 当同一个查询在不同的时间产生不同的结果集时，事务中就会出现所谓的幻读问题。例如，如果`select`执行了两次，但第二次返回了第一次中没有返回的行，则该行是“幻象”行
+
+**MySQL默认隔离级别（可重复读）可以在一定程度上解决幻读**？
+
+> **快照读**（普通`select`）：
+>
+> - 开始事务后（执行begin语句后），在执行第一个查询语句后，会创建一个`Read View`，后续的查询语句利用这个`Read View`，通过这个`Read View`就可以在`undo log`版本链找到事务开始时的数据，所以事务过程中每次查询的数据都是一样的。即使中途有其它事务插入了新记录，也查询不出来这条记录，所以就很好地避免了幻读问题。
+>
+> **当前读**（`select ... for update`）：
+>
+> - MySQL里除了普通查询是快照读，其它都是当前读，比如`update`、`insert`、`delete`，这些语句执行前都会查询最新版本地数据，然后再做进一步的操作。
+> - `selct ... for update`查询语句是当前读，每次执行的时候都是读取最新的数据。
+> - **`Innodb`引擎为了解决可重复读隔离级别使用当前读而造成的幻读问题，使用了间隙锁**。
+>
+> ```mysql
+> -- 事务A
+> begin;
+> select name from t_stu where id > 2 for update;
+> # 事务A执行了这条语句后，就在表中的记录加上id范围 (2, +∞)的`next-key lock`（间隙锁+记录锁的组合）
+> 
+> -- 事务B
+> begin;
+> insert into t_stu values (5, "Tom", 100); -- 阻塞！
+> # 事务B在执行插入语句的时候，判断到插入的位置被事务A加了`next-key lock`，于是事务B会生成一个插入意向锁，同时进入等待状态，直到事务A提交了事务。
+> # 这就避免了由于事务B插入新记录而导致事务A发生幻读的现象
+> ```
+
+可重复读隔离级别下，**幻读没有被完全解决**？
+
+> **可重读读隔离级别下可以很大程度上避免幻读，但是还没有完全解决幻读。**
+>
+> <font color="gree">第一个发生幻读现象的场景读</font>：
+>
+> - 事务A普通查询（select），没有结果
+> - 事务B插入一条记录，提交事务。（这里得提交事务，不然当前读的`next-key lock`会阻塞事务A）
+> - 事务A<font color="red">更新</font>该记录（**因为，更新记录是当前读，能够看到B插入的数据，当期进行更新是，记录的`trx_id`改为事务A的id，所以事务A再次进行普通查询时就能够查到了**）
+> - 事务A再次查询，查到该记录——出现幻读现象
+>
+> <font color="gree">第二个发生幻读现象的场景</font>：
+>
+> - T1时刻：事务A先执行<font color="red">快照读</font>语句：`select * from t_test where id > 100`得到3条记录
+> - T2时刻：事务B插入一个`id=200`的记录并提交
+> - T3时刻：事务A再执行<font color="red">当前读</font>语句：`select * from t_test where id > 100 for update`就会得到4条记录，此时发生了幻读现象
+>
+> **要避免这类特殊场景下发生幻读的现象的话，就是尽量在开启事务之后，马上执行`select ... for update`这嘞当前读语句**，因为它会对记录加`next-key lock`，从而避免其它事务插入一条新记录。
+
+
 
 ### 4. 锁
 
