@@ -507,23 +507,66 @@ public ThreadPoolExecutor(
 >
 > - `keepAliveTime`：当线程池中的线程数量大于`corePoolSize`，即有非核心线程时，这些非核心线程空闲后不会立即摧毁，而是会等待，直到等待的时间超过了`keepAliveTime`才会被回收销毁
 > - `unit`：`keepAliveTime`参数的时间单位
-> - `threadFactory`：`executor`创建新线程时会用到
+> - `threadFactory`：`executor`创建新线程时会用到。线程工厂，可以为线程创建时起个名字
 > - `handler`：决绝策略
 
 <font color="red" size=5>线程池的拒绝策略有哪些</font>
 
 如果当前同时运行的线程数量达到最大线程数量并且队列也已经被放满了任务时，`ThreadPoolExecutor`定义一些策略：
 
+- ![image-20250310161011661](.\imgs\image-20250310161011661.png)
 - `ThreadPoolExecutor.AbortPolicy`：**抛出`RejectedExecutionException`来拒绝新任务的处理。**（<font color="green">默认</font>）
 - `ThreadPoolExecutor.CallerRunsPolicy`：**调用执行者自己的线程运行任务，也就是直接在调用`execute`方法的线程中运行（`run`）被决绝的任务，如果执行程序已关闭，则丢弃该任务。**
 - `ThreadPoolExecutor.DiscardPolicy`：**不处理新任务，直接丢弃。**
 - `ThreadPoolExecutor.DiscardOldestPolicy`：此策略就**丢弃最早的未处理的任务请求。**
 
+<font color="red">线程池的`execute()`和`submit()`方法的区别？</font>
 
+> 使用`execute()`提交任务：任务执行过程中出现异常，会导致当前线程终止，并且异常会被打印到控制台或日志文件中。线程池会检测到这个线程终止，并创建一个新线程来替换它，从而保持配置的线程数不变。
+>
+> 使用`submit()`提交任务：如果在任务执行中发生异常，这个异常不会直接打印出来。异常会被封装在由`submit()`返回的`Future`对象中。当调用`Future.get()`方法时，可以捕获一个`ExecutionException`。这种情况下，线程不会因为异常而终止，它会继续存在于线程池中，准备执行后续的任务。
 
+如何给线程池命名？
 
+> 默认情况下创建的线程名字类似 `pool-1-thread-n` 这样的，没有业务含义，不利于我们定位问题。
+>
+> 1. 利用`guava`的ThreadFactoryBuilder
+>
+>    ```java
+>    ThreadFactory threadFactory = new ThreadFactoryBuilder()
+>                            .setNameFormat(threadNamePrefix + "-%d")
+>                            .setDaemon(true).build();
+>    ExecutorService threadPool = new ThreadPoolExecutor(corePoolSize, maximumPoolSize, keepAliveTime, TimeUnit.MINUTES, workQueue, threadFactory);
+>    ```
+>
+> 2. 自己实现ThreadFactorty
+>
+> ```java
+> ExecutorService pool = new ThreadPoolExecutor(
+> 	5, 
+>     5, 
+>     0L,
+>     TimeUnit.SECOND,
+>     new LinkedBlockingQueue<Runnable>(),
+>     new ThreadFactory() {
+>         private final AtomicInteger threadNumber = new AtomicInteger(1);
+>         
+>         @Override
+>         public Thread newTread(@NotNull Runnable r) {
+>             Thread t = new Thread(r);
+>             t.setName(name + "[#" + threadNumber.getAndIncrement() + "]");
+>             return t;
+>         }
+>     }
+> );
+> ```
+>
+> 
 
+如何设定线程池的大小？
 
+> - CPU密集型任务（`N+1`）：这种任务消耗的主要是CPU资源，可以将线程设置为`N（CPU核心数）+ 1`。
+> - IO密集型任务（`2N`）：这种任务会用大部分的时间来处理I/O交互，而线程在处理I/O的时间段内不会占用CPU来处理，这时就可以将CPU交给其它线程使用。因此在I/O密集型任务的引用中，可以多配置一些线程，具体的计算方法是2N。
 
 ### 3. JVM
 
