@@ -375,7 +375,17 @@ public static void method2() {
 - 当发生锁竞争时，都是使用的重量级锁（`Monitor`）。即多个线程同时竞争去给同一个对象加锁。
 - 偏向锁已经在`JDK18`中废弃，偏向锁仅仅在单线程访问同步代码块的场景中可以获得性能收益。如果存在多线程竞争，就需要 **撤销偏向锁** ，这个操作的性能开销是比较昂贵的。
 
+<font color="red" size=5>synchronized和ReentrantLock有什么区别</font>
 
+- 两者都是可重入锁。线程可以再次获取自己的内部锁
+- `synchronized`依赖于JVM而`ReentrantLock`依赖于API
+  - `synchronized`依赖于JVM实现
+  - `ReentrantLock`是JDK层面实现的，需要`lock()`和`unlock()`方法配置`try/finally`语句块完成
+- `ReentrantLock`比`synchronized`增加了一些高级功能
+  - 等待可中断：`ReentrantLock`提供了一种中断等待锁的线程的机制，通过`lock.lockInterruptibly()`可以实现在等待获取锁的过程中，如果有其它线程中断当前线程`interrupt()`，当前线程就会抛出`InterruptedException`异常，可以捕获该异常进行相应处理。
+  - 可实现公平锁：`ReentrantLock`通过构造方法可以指定是否是公平锁，`synchronized`只能是非公平锁。
+  - 可实现选择性通知（锁可以绑定多个条件）：`ReentrantLock`类结合`Condition`接口的`newCondition()`方法可以实现多条件选择性通知。
+  - 支持超时：`ReentrantLock`提供了`tryLock(timeout)`的方法，可以指定等待获取锁的最长等待时间，如果超过了等待时间，就会获取锁失败，不会一直等待。
 
 <font color="red" size=5>ThreadLocal原理？</font>
 
@@ -858,6 +868,107 @@ MySQL事务隔离级别具体是如何实现的？
 
 
 ### 4. 锁
+
+#### 全局锁
+
+```mysql
+-- 使用全局锁
+flush tables with read lock;
+-- 释放全局锁
+unlock tables;
+-- 当会话断开，全局锁会自动释放
+```
+
+执行后，**整个数据库就处于只读状态**了，这时其它线程执行以下操作，都会被阻塞：
+
+- 对数据库的**增删改(DML)**操作，比如`insert`，`delete`，`update`等语句
+- 对**表结构的更改(DDL)**操作，如`alter table`，`drop table`等语句
+
+全局锁应用场景是什么？
+
+- **全库逻辑备份**。在备份数据库期间，不会因为数据或表结构的更新，而出现备份文件的数据与预期不一样
+
+备份数据库数据的时候，使用全局锁会影响业务，有什么其它方式可以避免？
+
+- 在备份数据库之前开启事务，会先创建`Read View`，然后整个事务执行期间都在用这个`Read View`，而且由于`MVCC`的支持，备份期间业务依然可以对数据进行更新操作，不会影响备份数据库时的`Read View`，这样备份期间备份的数据一直是在开启事务时的数据。
+
+```
+# 在InnoDB引擎中，可以在备份时加上参数 --single-transaction 完成不加锁的一致性数据备份
+mysqldump --single-transaction -uroot -pPWD 数据库 > filename.sql
+```
+
+#### 表级锁
+
+表级锁，每次操作锁住整张表。锁定粒度大，发生锁重读的概率最高，并发度最低。应用在MyISAM,InnoDB等存储引擎。对于表级锁，主要分为以下三类：
+
+1. 表锁
+2. 元数据锁(`meta data lock, MDL`)
+3. 意向锁
+
+##### 表锁
+
+```mysql
+-- 加锁
+lock tables tb_name1, tb_name2, ... read/write;
+-- 解锁
+unlock tables;
+```
+
+1. 表共享锁(`read lock`)
+
+![image-20250311202326275](.\imgs\image-20250311202326275.png)
+
+- 加锁客户端和其它客户端都可以执行读操作——读读不互斥
+- 加锁客户端和其它客户端都不能执行写操作。当前客户端的写操作会失败，其它客户端的写操作会被**阻塞**。
+
+2. 表独占锁(`write lock`)
+
+![image-20250311202455263](.\imgs\image-20250311202455263.png)
+
+- 当前客户端可以执行读和写操作
+- 其它客户端的读和写操作都会被阻塞
+
+#### 元数据锁
+
+`DML`加锁过程是系统自动控制，无需显式使用，在访问一张表的时候会自动加上。`MDL`锁主要作用是维护表元数据的数据 一致性，在表上有活动事务时，不可以对元数据进行写入操作。**为了避免`DML`和`DDL`冲突，保证读写的正确性。**
+
+在Mysql5.5中引入MDL，当对一张表进行增删改查时，加MDL读锁（共享）；当对一张表结构进行变更时，加MDL写锁（排他）
+
+| 对应SQL                                               | 锁类型                                    | 说明                                                   |
+| ----------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------ |
+| `lock tables ... read/write`                          | `SHARED_READ_ONLY`/`SHARED_NO_READ_WRITE` |                                                        |
+| `select`, `select ... lock in share mode`             | `SHARED_READ`                             | 与`SHARED_READ`、`SHARED_WRITE`兼容，与`EXCLUSIVE`互斥 |
+| `insert`, `update`, `delete`, `select ... for update` | `SHARED_WRITE`                            | 与`SHARED_READ`、`SHARED_WRITE`兼容，与`EXCLUSIVE`互斥 |
+| `alter table ...`                                     | `EXCLUSIVE`                               | 与其它`MDL`都互斥                                      |
+
+##### 意向锁
+
+为了避免DML在执行时，加的行锁与表锁的冲突，在InnoDB中引入了意向锁，使得表锁不用检查每行数据是否加锁，使用意向锁来减少锁的检查。
+
+1. 意向共享锁（`IS`）：`select ... lock in share mode;`
+   1. 与表锁共享锁`read`兼容，与表锁排他锁`write`互斥
+2. 意向排他锁（`IX`）：`insert`, `update`, `delete`, `select ... for update`添加
+   1. 与表锁共享锁`read`及排他锁`write`都互斥。意向锁之间不会互斥
+
+```mysql
+-- 查看意向锁及行锁的加锁情况
+select object_schema, object_name, index_name, lock_type, lock_mode, lock_data from performance_schema.data_locks;
+```
+
+#### 行级锁
+
+行级锁，每次操作锁住对应的行数据，锁定粒度最小，发生锁冲突的概率最高，并发度最高，应用在InnoDB存储引擎。
+
+InnoDB的数据是基于索引组织的，**行锁是通过对索引上的索引项加锁来实现的**，而不是对记录加的锁。对于行级锁，主要分为以下三类：
+
+1. 行锁（Record Lock）：锁定单个行记录的锁，防止其它事务对此进行`update`和`delete`。在RC、RR隔离级别下都支持
+   1. 共享锁（S）：允许一个事务去读一行，阻止其它事务获得相同数据集的排他锁
+   2. 排他锁（X）：允许获取排他锁的事务更新数据，组织其它事务获得相同数据集的共享锁和排他锁
+   3. ![image-20250311224837199](.\imgs\image-20250311224837199.png)
+2. 间隙锁（Gap Lock）：锁定索引记录间隙（不含记录），确保索引记录间隙不变，防止其它事务在这个间隙进行insert，产生幻读。在RR隔离级别下都支持
+3. 临键锁（Next-Key Lock）：行锁和间隙锁组合，同时锁主数据，并锁住数据前面的间隙Gap。在RR隔离级别下支持。
+
+
 
 
 
@@ -1374,9 +1485,6 @@ class Solution {
                 if (m <= i) {
                     dp[i] |= word.equals(s.substring(i - m, i)) && dp[i - m];
                 }
-            }
-            if (dp[n]) {
-                return true;
             }
         }
         return dp[n];
