@@ -594,6 +594,109 @@ public ThreadPoolExecutor(
 > - 堆是进程中最大的一块内存，主要用于存放新创建的对象
 > - 方法区主要用于存放已被加载的类信息、常量、静态变量、即使编译器编译后的代码等。
 
+#### Java类加载机制
+
+类加载的过程包括了`加载`、连接（`验证`、`准备`、`解析`）、`初始化`五个阶段。
+
+- <font color="green" size=4>加载：检查并加载类的二进制数据。</font>
+  - 通过一个类的全限定名来获取其定义的二进制字节流
+  - 将这个字节流所代表的静态存储结构转化为方法区的运行时数据结构
+  - 在Java堆中生成一个代表该类的`java.lang.Class`对象，作为方法区中这些数据的访问入口
+- **验证：确保被加载的类的正确性。**
+- <font color="green" size=4>准备：为类的静态变量分配内存，并将其初始化为默认值。</font>
+  - 初始值通常情况下是数据类型**默认的零值**（如`0`、`0L`、`null`、`false`等）
+  - 数据初始化时没有对数组的各元素赋值，那么其中的元素将根据对应的数据类型而被赋予默认的零值
+  - `static final`类型变量，如果初始化值是编译时常量，则在准备阶段完成赋值，如`public static final int x = 10;`。如果值需要在运行时计算（如`public static final int x = someMethod();`），则在初始化阶段赋值。
+- **解析：把类中的符号引用转换为直接引用**。
+- <font color="green" size=4>初始化：执行类的静态代码块（`static {}`）和静态变量的显式初始化。</font>
+
+<font color="red" size=5>类初始化时机？</font>
+
+> - 创建类的实例，`new Object()`时
+> - 访问类的某个静态变量或者静态方法
+> - 初始化某个类的字类时，其父类也会被初始化
+> - 使用反射加载类`Class.forName("java.util.ArrayList");`
+
+<font color="red" size=5>Java对象的创建过程`Cat cat = new Cat();`？</font>
+
+> 1. **类加载检查**。JVM首先会检查该类是否已经被加载、连接和初始化。
+> 2. **分配内存**。分配的内存大小在类加载完成后就可以确定（由类的元数据确定）
+> 3. **初始化零值**。为对象的实例变量初始化零值（0、null、false等）
+> 4. **设置对象头**。对象头(Object Header)包括`Mark Word`存储对象的运行时数据（哈希码、锁状态、GC分代年龄等）、`Klass Pointer`存储类的元数据（Class对象），用于确定对象的类型。
+> 5. **执行实例初始化代码**。
+>    1. 实例变量初始化`int x = 10;`
+>    2. 实例初始化块`{}`
+>    3. 构造函数`Constructor`
+> 6. **返回对象引用**
+
+<font color="red" size=5>类加载器与双亲委派机制</font>
+
+JVM中内置了三个重要的`ClassLoader`：
+
+1. `BootstrapClassLoader`（**启动类加载器**）：最顶层的加载类，由C++实现，通常表示为null，没有父级，主要用来加载JDK内部的核心类库（`%JAVA_HOME%/lib`）以及被 `-Xbootclasspath`参数指定的路径下的所有类。
+2. `ExtentionClassLoader`（**扩展类加载器**）：主要负责加载`%JAVA_HOME%/lib/ext`目录下的jar包和类以及被`java.ext.dirs` 系统变量所指定的路径下的所有类。
+3. `AppClassLoader`(**应用程序类加载器**)：面向我们用户的加载器，负责加载当前应用 classpath 下的所有 jar 包和类。
+
+**`ClassLoader`类有两个关键的方法：**
+
+- `protected Class loadClass(String name, boolean resolve)`：加载指定二进制名称的类，实现双亲委派机制。`name`为类的二进制名称，`resolve`如果为true，在加载时调用`resolveClass(Class<?> c)`方法解析该类。
+- `protected Class findClass(String name)`：根据类的二进制名称查看类，默认实现是空方法。
+
+双亲委派机制的执行流程：
+
+- 在类加载时，系统首先会判断当前类是否被加载过。已经被加载的类会直接返回，否则才会尝试加载。
+- 在进行类加载时，类加载器首先不会自己尝试加载该类，而是把请求委派给父类加载其去完成（调用父类的`loadClass()`方法）。这样的话，所有的请求最终都会传送到顶层的启动类加载器`BoostrapClassLoader`中
+- 只有当父类加载器无法完成加载请求（搜索范围中没有找到所需的类时），字类加载器才会尝试自己去加载（调用自己的`findClass()`方法来加载类）
+- 如果字类加载器也无法加载该类，就会排除一个`ClassNotFoundException`异常
+
+> **JVM 判定两个 Java 类是否相同的具体规则**：JVM 不仅要看类的全名是否相同，还要看加载此类的类加载器是否一样。只有两者都相同的情况，才认为两个类是相同的。即使两个类来源于同一个 `Class` 文件，被同一个虚拟机加载，只要加载它们的类加载器不同，那这两个类就必定不相同。
+
+```java
+// ClassLoader 中的 loadClass 方法定义了 双亲委派机制 逻辑
+protected Class<?> loadClass(String name, boolean resolve)
+    throws ClassNotFoundException
+{
+    synchronized (getClassLoadingLock(name)) {
+        // 首先，检查该类是否已经加载过了
+        Class<?> c = findLoadedClass(name);
+        if (c == null) {
+            // 如果 c == null ，说明该类没有被加载过
+            long t0 = System.nanoTime();
+            try {
+                if (parent != null) {
+                    // 当父类加载器不为null时，通过父类的loadClass来加载该类
+                    c = parent.loadClass(name, false);
+                } else {
+                    // 当父类加载器为null时，则调用启动类加载器来加载该类
+                    c = findBootstrapClassOrNull(name);
+                }
+            } catch (ClassNotFoundException e) {
+				// 非空父类的加载器无法找到对应的类，则抛出异常
+            }
+
+            if (c == null) {
+			   // 当父类加载器无法加载时，则调用findClass方法来加载该类
+                // 用户可通过重写该方法，来自定义类加载器
+                long t1 = System.nanoTime();
+                c = findClass(name);
+
+                // 用于统计类加载器相关的信息
+                PerfCounter.getParentDelegationTime().addTime(t1 - t0);
+                PerfCounter.getFindClassTime().addElapsedTimeFrom(t1);
+                PerfCounter.getFindClasses().increment();
+            }
+        }
+        if (resolve) {
+            // 对类进行link操作
+            resolveClass(c);
+        }
+        return c;
+    }
+}
+```
+
+
+
 ### 4. 设计模式
 
 
@@ -928,7 +1031,7 @@ unlock tables;
 - 当前客户端可以执行读和写操作
 - 其它客户端的读和写操作都会被阻塞
 
-#### 元数据锁
+##### 元数据锁
 
 `DML`加锁过程是系统自动控制，无需显式使用，在访问一张表的时候会自动加上。`MDL`锁主要作用是维护表元数据的数据 一致性，在表上有活动事务时，不可以对元数据进行写入操作。**为了避免`DML`和`DDL`冲突，保证读写的正确性。**
 
@@ -961,16 +1064,35 @@ select object_schema, object_name, index_name, lock_type, lock_mode, lock_data f
 
 InnoDB的数据是基于索引组织的，**行锁是通过对索引上的索引项加锁来实现的**，而不是对记录加的锁。对于行级锁，主要分为以下三类：
 
-1. 行锁（Record Lock）：锁定单个行记录的锁，防止其它事务对此进行`update`和`delete`。在RC、RR隔离级别下都支持
-   1. 共享锁（S）：允许一个事务去读一行，阻止其它事务获得相同数据集的排他锁
-   2. 排他锁（X）：允许获取排他锁的事务更新数据，组织其它事务获得相同数据集的共享锁和排他锁
+1. **行锁**（Record Lock）：锁定单个行记录的锁，防止其它事务对此进行`update`和`delete`。在RC、RR隔离级别下都支持
+   1. **共享锁**（`S`）：允许一个事务去读一行，阻止其它事务获得相同数据集的排他锁
+   2. 排他/**独占锁**（`X`）：允许获取排他锁的事务更新数据，组织其它事务获得相同数据集的共享锁和排他锁
    3. ![image-20250311224837199](.\imgs\image-20250311224837199.png)
-2. 间隙锁（Gap Lock）：锁定索引记录间隙（不含记录），确保索引记录间隙不变，防止其它事务在这个间隙进行insert，产生幻读。在RR隔离级别下都支持
-3. 临键锁（Next-Key Lock）：行锁和间隙锁组合，同时锁主数据，并锁住数据前面的间隙Gap。在RR隔离级别下支持。
+2. **间隙锁**（`Gap Lock`）：锁定索引记录间隙（不含记录），确保索引记录间隙不变，防止其它事务在这个间隙进行insert，产生幻读。在RR隔离级别下都支持
+3. **临键锁**（`Next-Key Lock`）：行锁和间隙锁组合，同时锁主数据，并锁住数据前面的间隙Gap。在RR隔离级别下支持。
 
+<font color="red" size=4>`MySQL 8.0.26`版本，在可重复读隔离级别之下，唯一索引和非唯一索引的行级锁和加锁规则</font>
 
+> <font color="red">唯一索引等值查询：</font>
+>
+> - 当查询的记录**存在**时，在索引树上定位到这一条记录后，将该记录的索引中的`next-key lock`会**退化为记录锁**
+> - 当查询的记录**不存在**时，在索引树**找到第一条大于该查询记录的记录后**，将该记录的索引中的`next-key lock`会退化成**间隙锁**
+>
+> <font color="red">非唯一索引等值查询：</font>
+>
+> - 当查询的记录**存在**时，由于不是唯一索引，所以**可能存在索引值相同的记录**。于是非唯一索引等值查询的过程是一个扫描的过程，直到扫描到第一个不符合条件的二级索引记录就停止扫描，然后**在扫描的过程中，对扫描到的二级索引记录加的是next-key锁，而对于第一个不符合条件的二级索引记录，该二级索引的next-key锁会退化成间隙锁。同时，在符合查询条件的记录的主键索引上加记录锁。**
+> - 当查询的记录**不存在**时，**扫描到第一条不符合条件的二级索引记录，该二级索引的`next-key`锁会退化成间隙锁。因为不存在满足查询条件的记录，所以不会对主键索引加锁。**
+>
+> 非唯一索引和主键索引的范围查询的加锁规则不同之处在于：
+>
+> - **唯一索引在满足一些条件时，索引的`next-key lock`退化为间隙锁或者记录锁。**
+> - **非唯一索引范围查询，索引的`next-key lock`不会退化为间隙锁和记录锁。**
 
+<font color="red" size=5>没加索引的查询</font>
 
+**如果锁定读查询语句，没有使用索引列作为查询条件，或者查询语句没有走索引查询，导致扫描语句没有走索引查询，导致扫描是全表扫描。那么，每一条记录的索引上都会加上`next-key lock`，这样就相当于锁主的全表，这时如果其它事务对该表进行增、删、改操作的时候，都会被阻塞。**
+
+**在线上执行`update`、`delete`、`select ... for update`等具有加锁性质的语句，一定要检查语句是否走了索引，如果是全表扫描的话，会对每一个索引加`next-key lock`，相当于把整个表锁主了。**
 
 ### 5. 日志
 
