@@ -642,7 +642,7 @@ JVM中内置了三个重要的`ClassLoader`：
 - `protected Class loadClass(String name, boolean resolve)`：加载指定二进制名称的类，实现双亲委派机制。`name`为类的二进制名称，`resolve`如果为true，在加载时调用`resolveClass(Class<?> c)`方法解析该类。
 - `protected Class findClass(String name)`：根据类的二进制名称查看类，默认实现是空方法。
 
-双亲委派机制的执行流程：
+**双亲委派机制的执行流程：**
 
 - 在类加载时，系统首先会判断当前类是否被加载过。已经被加载的类会直接返回，否则才会尝试加载。
 - 在进行类加载时，类加载器首先不会自己尝试加载该类，而是把请求委派给父类加载其去完成（调用父类的`loadClass()`方法）。这样的话，所有的请求最终都会传送到顶层的启动类加载器`BoostrapClassLoader`中
@@ -650,6 +650,8 @@ JVM中内置了三个重要的`ClassLoader`：
 - 如果字类加载器也无法加载该类，就会排除一个`ClassNotFoundException`异常
 
 > **JVM 判定两个 Java 类是否相同的具体规则**：JVM 不仅要看类的全名是否相同，还要看加载此类的类加载器是否一样。只有两者都相同的情况，才认为两个类是相同的。即使两个类来源于同一个 `Class` 文件，被同一个虚拟机加载，只要加载它们的类加载器不同，那这两个类就必定不相同。
+
+双亲委派机制的好处：**保证了Java程序的稳定运行，可以避免类的重复加载，也保证了Java的核心API不被篡改。**
 
 ```java
 // ClassLoader 中的 loadClass 方法定义了 双亲委派机制 逻辑
@@ -718,7 +720,350 @@ Spring是如何解决循环依赖的？
 
 ## MySQL
 
+### 0. SQL
+
+#### 多表查询
+
+从多张表中查询。**在多表查询时，需要消除笛卡尔积的影响**。通过表之间的共同字段（如`select * from emp, dept where emp.dept_id = dept.id;`），值为`null`的字段值，不会查询到。多表查询分类：
+
+- 连接查询
+  - *内连接*：相当于A、B**交集**部分数据
+  - *外连接*：
+    - 左外连接：查询**左表**所有数据，以及两张表交集部分数据
+    - 右外连接：查询**右表**所有数据，以及两张表交集数据
+  - *自连接*：当前表与自身的连接查询，自连接必须使用表别名
+- 子查询
+
+##### 内连接
+
+隐式内连接：`select ... from t1, t2 where ...;`
+
+- `select emp.name, dept.name from emp, dept where emp.dept_id = dept.id;`
+
+显式内连接：`select .. from t1 inner join t2 on ...;`
+
+- `select emp.name, dept.name from emp inner join dept on emp.dept_id = dept.id;`
+
+##### 外连接
+
+左外连接：<font color="red">相当于查询表1（左表）的所有数据，包含表1和表2交集部分的数据</font>
+
+- `select ... from t1 left join t2 on ...;`
+- `select e.*, d.name from emp e left join dept d on e.dept_id = d.id;`
+
+右外连接：<font color='red'>相当于查询表2（右表）的所有数据，包含表1和表2交集部分的数据</font>
+
+- `select ... from t1 right join t2 on ...;`
+- `select d.*, e.* from emp e right outer join dept d on e.dept_id = dept.id;`
+
+##### 自连接
+
+<font color="red">自连接可以是内连接（查询交集部分数据），也可以是外连接（查询左/右表所有数据）</font>
+
+**使用自连接时一定要给表起别名**
+
+查询员工及其所有领导的信息
+
+- `select e1.name, e2.name from emp e1, emp e2 where e1.manager_id = e2.id;`
+
+查询所有员工 emp 及其领导的名字 emp，如果员工没有领导，也需要查询出来
+
+- 表结构：emp a, emp b
+- `select a.name '员工', b.name '领导' from emp a left join emp b on a.manager_id = b.id;`
+
+##### 联合查询
+
+对于`union`查询，就是把多次查询的结果合并起来，形成一个新的查询结果集。
+
+- **对于联合查询的多张表的列数必须保持一致，字段类型也需要保持一致。**
+- **`union all`会将全部的数据直接合并在一起，`union`会对合并之后的数据去重。**
+
+```MySQL
+SELECT ... FROM table1, ...
+UNION [ALL]
+SELECT ... FROM table2, ...;
+```
+
+##### 子查询
+
+- 概念：SQL语句中嵌套SELECT语句，称为嵌套查询，又称子查询
+  - `SELECT * FROM t1 WHERE column1 = (SELECT column1 FROM t1);`
+  - 子查询外部的语句可以是INSERT、UPDATE、DELETE、SELECT中的任何一个
+- 根据子查询结果不同，分为：
+  - 标量子查询（子查询结果为单个值，单行单列）
+  - 列子查询（子查询结果为一列）
+    - `NOT IN`, `IN`
+    - `ANY`, `ALL`, `SOME`，后面跟上子查询结果
+    - 查询比财务部**所有**员工工资都高的员工信息：`select * from emp where salary > all (select salary from emp where (select id from dept where name = '财务部'));`
+  - 行子查询（子查询结果为一行）
+    - 查询与张无忌薪资和直属领导相同的员工信息：`select * from emp where (salary, manager_id) = (select salary, manager_id from emp where name = '张无忌');`
+  - 表子查询（子查询结果为多行多列）
+    - `select * from emp where (job, salary) in (select job, salary from emp where name = 'a' or name = 'b');`
+- 根据子查询位置，分为WHERE之后、FROM之后、SELECT之后
+
+
+
+
+
 ### 1. 基础
+
+#### <font color="red" size=5>执行一条`select`语句，期间发生了什么？</font>
+
+```mysql
+select * from product where id = 1;
+```
+
+![查询语句执行流程](https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/sql%E6%89%A7%E8%A1%8C%E8%BF%87%E7%A8%8B/mysql%E6%9F%A5%E8%AF%A2%E6%B5%81%E7%A8%8B.png)
+
+MySQL的架构共分为两层：**Server层和存储引擎层**
+
+- **Server层负责建立连接、分析和执行SQL**。
+- **存储引擎层负责数据的存储和提取。**从 MySQL 5.5 版本开始， InnoDB 成为了 MySQL 的默认存储引擎。nnoDB 支持索引类型是 B+树
+
+> 执行一条SQL查询语句，期间发生了什么？
+>
+> - 连接器。建立连接、管理连接、校验用户身份
+> - 查询缓存。c哈寻语句如果命中查询缓存则直接返回，否则继续往下执行。MYSQL8.0已删除该模块
+> - 解析器。t过解析器对SQL查询语句进行词法解析、语法解析，然后构建语法树，方便后续模块读取表名、字段、语句类型
+> - 执行SQL：执行SQL共有三个阶段
+>   - 预处理阶段：检查表或字段是否存在；将`select *`中的`*`符号扩展为表上的所有列
+>   - 优化阶段：基于查询成本的考虑，选择查询成本最小的执行计划
+>   - 执行阶段：根据执行计划执行SQL查询语句，从存储引擎读取记录，返回给客户端。
+
+##### **一、连接器**
+
+1. **与MYSQL服务端建立连接。**连接的过程需要先经过TCP三次握手，因为MYSQL是基于TCP协议进行传输的。
+2. **校验客户端的用户名和密码**，如果用户名或密码不对，则会报错。
+3. **获取用户的权限，保存起来，后续该用户在此连接里的任何操作，都会基于连接开始时读到的权限进行权限逻辑的判断**
+
+> 查看MYSQL服务被多少个客户端连接了
+>
+> - `show processlist;`
+>
+> 空闲连接会一致占用着吗？
+>
+> - MYSQL定义了空闲连接的最大空闲时长，由`wait_timeout`参数控制，默认值是8小时（28880秒），如果空闲连接超过了这个时间，连接器就会自动将它断开
+> - `show variables like 'wait_timeout';`
+> - 手动断开空闲连接：`kill connection +6`
+>
+> MYSQL的连接数有限制吗？
+>
+> - MYSQL服务支持的最大连接数由`max_connections`参数控制，MYSQL服务器默认是151个连接，超过这个值，系统会拒绝接下来的连接请求，并报错提示'Too math connections'
+> - `show variables like 'max_connections'`
+>
+> 怎么解决长连接占用内存的问题？
+>
+> 1. 定期断开长连接。
+> 2. 客户端主动重置连接。
+
+##### **二、查询缓存**
+
+连接器的工作的完成后，客户端就可以向MYSQL服务发送SQL语句，**MYSQL服务收到SQL语句后，就会解析出SQL语句的第一个字段，看看是什么类型的语句。**
+
+如果是查询语句（select语句），MYSQL就会先去查询缓存（Query Cache）里查找缓存数据，看看之前有没有执行过这一条命令。查询缓存是以`key-value`形式保存在内存中的，key是SQL查询语句，value为SQL语句查询的结果。
+
+如果查询的语句命中查询缓存，那么就会直接返回value给客户端。如果查询的语句没有命中查询缓存中，那么就要往下继续执行，等执行完成，查询结果就会被放入查询缓存中。
+
+> 如果一个表有更新操作，那么这个表的查询缓存就会被清空。如果刚缓存了一个查询结果很大的数据，还没有被使用的时候，刚好这个表有更新操作，查询缓存就被清空了，相当于缓存了个寂寞。
+>
+> MYSQL8.0版本直接将查询缓存删除掉了
+>
+> 查询缓存是server层的，也就是MYSQL8.0版本移除了server层的查询缓存，并不是innodb存储引擎中的buffer pool
+
+##### 三、解析SQL
+
+在正式执行SQL查询语句之前，MYSQL会对SQL语句做解析，这个工作由**解析器**完成
+
+**词法解析**：MYSQL根据输入的字符串识别出关键字出来
+
+**语法解析**：
+
+- 根据词法解析的结果，语法解析器会根据语法规则，判断输入的SQL语句是否满足MySQL语法。
+- 如果没有问题就会构建SQL语法树，方便后面模型获取SQL类型、表名、字段名、where条件等等。
+
+##### 四、执行SQL
+
+经过解析器后，接着就要进行执行SQL查询语句的流程了，每条`SELECT`查询语句流程主要可以分为下面三个阶段：
+
+- prepare阶段，**预处理**阶段
+- optimize阶段：**优化**阶段
+- execute阶段：**执行**阶段
+
+> **预处理器：**
+>
+> - 检查SQL查询语句中的表或者字段是否存在
+> - 将`select *`中`*`符号，扩展为表上的所有列
+>
+> **优化器：**经过预处阶段后，还需要为SQL查询语句先执行一个执行计划，由**优化器**来完成
+>
+> - **优化器主要负责将SQL查询语句的执行方案确定下来**。比如在表里面有多个索引的时候，优化器会基于查询程本的考虑，来决定选择使用哪个索引。
+> - 在查询语句最前面加个`explain`命令，输出SQL语句的执行计划。
+>   - `select id from product where id > 1 and name like 'i%';`
+>   - 该查询语句的结果既可以使用主键索引，也可以使用普通索引，但执行的效率会不同
+>   - 由于这条查询语句是覆盖索引，即可以直接在二级索引就能查找到结果，就没必要在主键索引查找。
+>
+> **执行器：**在执行的过程中，执行器就会和存储引擎交互，交互是以记录为单位的。
+>
+> - 主键索引查询
+> - 全表扫描
+> - 索引下推
+
+###### 主键索引查询
+
+> `select * from product where id = 1;`
+
+
+
+
+
+###### 全表扫描
+
+> `select * from product where name = 'iphone';`
+
+
+
+
+
+###### 索引下推
+
+减少二级索引在查询时的回表操作，提高查询的效率，因为它将Server层部分负责的事情，交给存储引擎层去处理了
+
+
+
+
+
+
+
+#### <font color="red" size=5>MySQL一行记录是怎么存储的？</font>
+
+> MySQL的NULL值是怎么存放的？
+>
+> - MySQL的Compact行格式会**用NULL值列表**来标记值为NULL的列，NULL值并不会存储在行格式中的真实数据部分
+> - NULL值列表会占用1字节空间，当表中所有字段都定义成NOT NULL，行格式就不会有NULL值列表，可以节省1字节的空间
+>
+> MYSQL怎么知道`varchar(n)`实际占用数据的大小？
+>
+> - MYSQL的Compact行格式会用**变长字段长度列表**存储变长字段实际占用的数据大小
+>
+> `varchar(n)`中n最大取值为多少？
+>
+> - 一行记录最大能存储35535字节，包含**变长字段字节数列表**和**NULL值列表**所占字节数
+> - 只有一个varchar(n)字段，且允许为NULL：65535-2-1=65532
+> - 多字段：所有字段长度+变长字段字节数列表+NULL值列表 <= 65535
+>
+> 行溢出后，MySQL是怎么处理的？
+>
+> - **如果一个数据页存不了一条记录，InnoDB存储引擎会自动将溢出的数据存放到数据页中。**
+> - Compact行格式：当发生行溢出时，在记录的真实数据处只会保存该列的一部分数据，而把剩余的数据放在溢出页中，然后在真实数据处使用20字节存储指向溢出页的地址，从而可以找到剩余数据所在页
+> - `Compressed`和`Dynamic`这两种格式采用完全的行溢出方式，记录的真实数据处不会存储该列的一部分数据，只存储20字节的指针来指向溢出页，而实际的数据都存储在溢出页中
+
+
+
+##### MySQL的数据存放在哪个文件？
+
+查看Mysql数据库的文件存放在哪个目录？
+
+- `show variables like 'datadir';`
+- 每创建一个数据库，都会在`/var/lib/mysql/`目录里面创建一个以数据库为名的目录，然后保存表结构和表数据的文件都会存放在这个目录里
+- `D:\MySQL\mysql-5.7.19-winx64\data`下的数据`\coding_mysql`：
+  - `db.opt`：存储当前数据库的**默认字符集和字符校验规则**
+  - `tb_product.frm`：保存每个表的元数据信息，主要包含**表结构**定义
+  - `tb_product.idb`：保存**表数据**。表数据既可以存在共享表空间文件（文件名：ibdata1），也可以存放在独占表空间文件（文件名：表名字.idb）。这个行为由参数`innodb_file_per_table`控制的，若设置了参数`innodb_per_table=1`，则会将存储的数据、索引等信息单独存放在一个独占表空间。
+
+##### 表空间文件的结构是怎么样的？
+
+**表空间(`TableSpace`)由段(`Segment`)、区(`extent`)、页(`page`)、行(`row`)组成**，InnoDB存储引擎的逻辑存储结构大致如下图：
+![img](https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/row_format/%E8%A1%A8%E7%A9%BA%E9%97%B4%E7%BB%93%E6%9E%84.drawio.png)
+
+1 行（row）
+
+数据库表中的记录都是按行（row）进行存放的，每行记录根据不同的行格式，有不同的存储结构
+
+2 页（page）
+
+**InnoDB的数据是按页为单位来读写的**，即当需要读取一条记录的时候，并不是将这个行记录从磁盘读出来，而是以页为单位，将其整体读入内存。
+
+**默认每个页的大小是16KB**，也就是最多能保证16KB的连续存储空间。
+
+3 区（extent）
+
+**在表中数据量大的时候，为某个索引分配空间的时候就不再按照页为单位分配了，而是按照区（extent）为单位分配。每个区的大小为1MB，对于16KB的页来说，连续的64个页会被划为一个区，这样就使得链表中相邻的页的屋里位置也相邻，就能使用顺序I/O了。**
+
+4 段（Segment）
+
+表空间是由各个段（segment）组成的，段是由多个区（extent）组成的。段一般分为数据段、索引段和回滚段。
+
+- 索引段：存放 B + 树的非叶子节点的区的集合；
+- 数据段：存放 B + 树的叶子节点的区的集合；
+- 回滚段：存放的是回滚数据的区的集合
+
+##### InnoDB行格式有哪些？
+
+行格式（row format），就是一条记录的存储结构。
+
+- Redundant
+- Compact
+- Dynamic和Compressed
+
+##### COMPACT行格式长什么样？
+
+![Compact行格式](https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/row_format/COMPACT.drawio.png)
+
+一条完整的记录分为**记录的额外信息**和**记录的真实数据**两个部分
+
+**记录的额外信息：**
+
+1. <font color="red">**变长字段长度列表**</font>
+   1. char是定长，varchar是变长，变长字段实际存储的数据的长度（大小）不固定
+   2. 所以，**在存储数据的时候，也要把数据占用的大小存起来，存到变长字段长度列表里面，读取数据的时候才能根据这个变长字段长度列表去读取对应长度的数据**。
+   3. 变长字段占的真实数据占用的字节数会按照列的顺序<font color="red">逆序存放</font>>。
+      1. 记录头信息中指向下一个记录的指针，指向的是下一条记录的记录头信息和真实数据之间的位置，这样的好处是向左读就是记录头信息，向右读就是真实数据，比较方便
+      2. **逆序存放，可以使得位置靠前的记录的真实数据和数据对应的字段长度信息可以同时在一个`CPU Cache Line`中，可以提高`CPU Cache`的命中率。**
+   4. **NULL值不不会存放在行格式中记录的真实数据部分里的**，所以变长字段长度列表里不需要保存值为NULL的变长字段的长度。
+   5. **当数据表没有变长字段时，这时表里的行格式就不会有变长字段长度列表了。**
+2. <font color="red">NULL值列表</font>
+   1. 表中的某些列可能会存储NULL值，如果把这些NULL值放到记录的真实数据中会比较浪费空间，所以Compact行格式把这些值为NULL的列存储到NULL值列表中
+   2. 如果存在允许NULL值得列，则每个列对应一个二进制位（bit），二进制位按照列的顺序逆序排列
+      1. 二进制位的值为`1`时，代表该列的值为NULL。
+      2. 二进制位的值为`0`时，代表该列的值不为NULL。
+      3. NULL 值列表必须用整数个字节的位表示（1字节8位），如果使用的二进制位个数不足整数个字节，则在字节的高位补`0`
+   3. NULL值列表也不是必须的。**当数据表的字段都定义成`NOT NULL`的时候，这时候表的行格式就不会有NULL值列表**
+3. <font color="red">记录头信息</font>
+   1. `delete_mask` ：标识此条数据是否被删除。
+   2. `next_record`：下一条记录的位置。记录与记录之间是通过链表组织的。
+   3. `record_type`：表示当前记录的类型，0表示普通记录，1表示B+树非叶子节点记录，2表示最小记录，3表示最大记录
+
+记录的真实数据：
+
+记录真实数据部分除了定义的字段，还有三个隐藏字段，分别为：`row_id`、`trx_id`、`roll_pointer`
+
+![img](https://cdn.xiaolincoding.com/gh/xiaolincoder/mysql/row_format/%E8%AE%B0%E5%BD%95%E7%9A%84%E7%9C%9F%E5%AE%9E%E6%95%B0%E6%8D%AE.png)
+
+- `row_id`：如果建表时指定了主键或者唯一约束列，那么就没有row_id隐藏字段。如果都没有，InnoDB就会为记录添加row_id隐藏字段。非必须，占用6个字节
+- `trx_id`：事务id，表示这个数据是由哪个事务生成的。必须，占用6个字节
+- `roll_pointer`：记录上一个版本的指针。必须，占用7个字节
+
+##### varchar(n)中n的最大值为多少？
+
+**MYSQL规定除了TEXT、BLOBs这种大对象类型之外，其它所有列（不包括隐藏列和记录头信息）占用的字节长度加起来不能超过65535个字节。**
+
+- `varchar(n)`字段类型的n代表的是最多存储的字符数量，并不是字节数
+
+对于单字段情况：
+
+1. NULL值列表：字段允许为NULL，所以用1个字节表示NULL值列表
+2. 变长字段列表：如果变长字段允许存储的最大字节数<=255字节，就会用1字节表示变长字段长度；如果>255字节，就会用2字节表示变长字段长度
+3. 真实数据：以字符集ascii为例，单个字符占用1个字节
+4. `2 + 1 + x = 65535`，`x = 65532`。<font color="red">在数据库表只有一个`varchar(n)`字符且字符集是`ascii`的情况下，`varchar(n)`中n的最大值是65532</font>
+
+对于多字段的情况下，要保证所有字段长度+变长字段字节数列表所占用的字节数+NULL列表所占用字节数<=65535
+
+##### 行溢出，MySQL是怎么处理的？
+
+MySQL中磁盘和内存交互的基本单位是页，一个页的大小一般是16KB，也就是16384字节，而一个varchar(n)类型的列最多可以存储65535字节，这时一个页可能就i存不了一条记录。这个时候就会**发生行溢出，多的数据就会存到另外的溢出页中**。
+
+- `Compact`行格式：在记录的真实数据处只会保存该列的一部分数据，而把剩余的数据放在溢出页中，然后真实数据处用**20字节**存储指向溢出页的地址，从而可以找到剩余数据所在页。
+- `Compressed`和`Dynamic`：这两种格式采用完全的行溢出方式，记录的真实数据处不会存储该列的一部分数据，只存储20个字节的指针指向溢出页。而实际的数据都存在溢出页
 
 
 
@@ -791,15 +1136,15 @@ MySQL是如何创建索引的？
 什么时候适合索引？
 
 > - 字段有唯一性限制的，比如商品编码
-> - 经常用于 `where` 查询条件的字段
-> - 经常用于 `group by` 和 `order by` 的字段
+> - 经常用于 `where` 查询条件的字段，能够提高查询速度，如果查询条件不是一个字段，可以建立联合索引。
+> - 经常用于 `group by` 和 `order by` 的字段，这样在查询的时候就不需要做一次排序，因为建立索引之后的B+Tree中的记录都是排序好的。
 
 什么时候不需要创建索引？
 
 > - `where` 条件，`group by`，`order by`里用不到的字段
-> - 字段中存在大量重复数据，不需要创建索引
+> - 字段中存在大量重复数据，不需要创建索引，比如性别字段，只有男女。如果数据库中，男女记录分布均匀，那么无论搜索哪个值都可能得到一半的数据。在这种情况下，还不如不要索引，因为MySQL的查询优化器，在发现某个值出现在表的数据行中的百分比很高时，它一般会忽略索引，进行全表扫描。
 > - 表数据太少的时候，不需要创建索引
-> - 经常更新的字段不用创建索引
+> - 经常更新的字段不用创建索引，因为索引字段频繁修改，由于需要维护索引的有序性，有额外的维护成本。
 
 sql语句执行计划？
 
@@ -1090,7 +1435,7 @@ InnoDB的数据是基于索引组织的，**行锁是通过对索引上的索引
 
 <font color="red" size=5>没加索引的查询</font>
 
-**如果锁定读查询语句，没有使用索引列作为查询条件，或者查询语句没有走索引查询，导致扫描语句没有走索引查询，导致扫描是全表扫描。那么，每一条记录的索引上都会加上`next-key lock`，这样就相当于锁主的全表，这时如果其它事务对该表进行增、删、改操作的时候，都会被阻塞。**
+**如果锁定读`select ... for update`查询语句，没有使用索引列作为查询条件，或者查询语句没有走索引查询，导致扫描语句没有走索引查询，导致扫描是全表扫描。那么，每一条记录的索引上都会加上`next-key lock`，这样就相当于锁主的全表，这时如果其它事务对该表进行增、删、改操作的时候，都会被阻塞。**
 
 **在线上执行`update`、`delete`、`select ... for update`等具有加锁性质的语句，一定要检查语句是否走了索引，如果是全表扫描的话，会对每一个索引加`next-key lock`，相当于把整个表锁主了。**
 
@@ -1108,7 +1453,11 @@ InnoDB的数据是基于索引组织的，**行锁是通过对索引上的索引
 
 Redis基本数据类型
 
-> 
+> Redis常见的五种数据类型：**String字符串、Hash哈希、List列表、Set集合、Zset有序集合**。
+
+- `string`：缓存对象、常规计数、分布式锁
+
+
 
 ### 2. 持久化
 
@@ -1176,12 +1525,9 @@ class Solution {
 
 二叉树不相邻节点之和最大值？
 
-```java
-```
+# leetcode
 
-## leetcode
-
-### 动态规划
+## 动态规划
 
 #### 思路
 
@@ -1541,6 +1887,18 @@ class Solution {
 }
 ```
 
+### 买卖股票
+
+#### 122 买卖股票的最佳时机Ⅱ
+
+
+
+#### 309 买卖股票的最佳时机含冷冻期
+
+
+
+
+
 ### 屮稿
 
 #### 322. 零钱兑换
@@ -1823,6 +2181,323 @@ private static String convertDecToBase62(long num) {
 
 
 # hmdp
+
+## 1. 短信登录
+
+登录逻辑：
+
+1. 获取登录码
+   1. 输入电话，后端校验手机号是否合法
+   2. 合法，生成6位随机数字
+   3. 保存登录码到redis中，`login:code:手机号`-`code`
+   4. 发送验证码到手机
+2. 用户登录
+   1. 输入手机号和验证码
+   2. 后端校验手机号格式是否正确
+   3. 根据`login:code:phone`获取redis中的校验码
+   4. 校验码存在且正确，则根据手机号到数据库中查询用户信息
+   5. 如果用户不存在，则创建新用户
+   6. 将用户信息保存到 redis中，便于登录校验。类型为Hash类型，key为`login:token:random_token`，值为键值对
+   7. 返回token给前端，用户登录校验
+   8. 前端每次发送请求都会在**请求头**中携带该token
+
+### 1.1 基于session实现登录流程
+
+用户在请求时候，会从cookie中携带JsessionId到后台，后台通过JsessionId从session中拿到用户信息，如果没有session信息，则进行拦截；如果有session信息，则将用户信息保存到threadLocal中，并且放行。
+
+![基于session登录](.\hmdp-imgs\1653066208144.png)
+
+Tomcat的运行原理：
+
+![1653068196656](.\hmdp-imgs\1653068196656.png)
+
+- **当tomcat端的socket接受到数据后，监听线程会从tomcat的线程池中取出一个线程执行用户请求**
+- **每个用户的请求都由tomcat线程池中的一个线程来完成工作，使用完成后再进行回收。每个请求都是独立的，所以在每个用户访问工程时，可以使用`ThreadLocal`来做线程隔离，每个线程操作自己的一份数据。**
+
+### 1.2 session共享问题
+
+**核心思路分析：**
+
+每个tomcat中都有一份属于自己的session,假设用户第一次访问第一台tomcat，并且把自己的信息存放到第一台服务器的session中，但是第二次这个用户访问到了第二台tomcat，那么在第二台服务器上，肯定没有第一台服务器存放的session，所以此时 整个登录拦截功能就会出现问题，我们能如何解决这个问题呢？早期的方案是**session拷贝**，就是说虽然每个tomcat上都有不同的session，但是每当任意一台服务器的session修改时，都会同步给其他的Tomcat服务器的session，这样的话，就可以实现session的共享了
+
+但是这种方案具有两个大问题
+
+1、每台服务器中都有完整的一份session数据，服务器压力过大。
+
+2、session拷贝数据时，可能会出现延迟
+
+### 1.3 Redis代替session的业务流程
+
+![1653319261433](.\hmdp-imgs\1653319261433.png)
+
+### 1.3 基于Redis实现session共享
+
+1、登录验证码（string类型）
+
+- key：`login:code:phone`
+- value：`code`
+
+```java
+// 3. 符合，生成验证码
+String code = RandomUtil.randomNumbers(6);
+
+// // 4. 保存验证码到session
+// session.setAttribute("code", code);
+
+// 4. 保存验证码到redis   set key value ex 120
+stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone, code);
+// 设置验证码code过期时间
+stringRedisTemplate.expire(LOGIN_CODE_KEY + phone, LOGIN_CODE_TTL, TimeUnit.MINUTES);
+```
+
+
+
+2、用户登录信息（Hash类型）
+
+- key：`login:code:random_token`
+- value：`token`
+
+```java
+// 7. 保存用户信息到 redis 中
+// 7.1 随机生成token，作为登录令牌
+String token = UUID.randomUUID().toString(true);
+// 7.2 将User对象转为HashMap存储
+UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+// warn: userDTO中id属性为Long，beanToMap默认会保留value类型。但是stringRedisMap要求key和value都是String
+// Map<String, Object> userMap = BeanUtil.beanToMap(userDTO);
+Map<String, Object> userMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+        CopyOptions.create()
+                .setIgnoreNullValue(true)
+                .setFieldValueEditor((fieldKey, fieldValue) -> fieldValue.toString()));
+String tokenKey = LOGIN_USER_KEY + token;
+stringRedisTemplate.opsForHash().putAll(tokenKey, userMap);
+// 设置token过期时间
+stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL, TimeUnit.MINUTES);
+```
+
+### 1.4 解决登录状态刷新问题
+
+<font color="red">问题</font>：当前登录拦截器`LoginInterceptor`只会拦截需要登录的路径，在拦截的同时刷新token有效期。而当用户访问了哪些不需要拦截的路径时，无法刷新token有效期
+
+<font color="red">解决</font>：添加一个拦截器，在第一个拦截器中拦截所有路径，在该拦截器`RefreshInterceptor`中获取token并刷新有效期
+
+| ![1653320822964](.\hmdp-imgs\1653320822964.png) | ![1653320764547](.\hmdp-imgs\1653320764547.png) |
+| ----------------------------------------------- | ----------------------------------------------- |
+
+```java
+/**
+ * @Author: charlie
+ * @CreateTime: Created in 2025/2/23 18:44
+ * @Description: 登录状态刷新拦截器
+ * 1. 由于拦截器是手动创建的，spring不会管理其生命周期以及依赖注入。需要通过构造器注入属性
+ * 2. 拦截所有请求，刷新token有效期
+ */
+@RequiredArgsConstructor
+public class RefreshInterceptor implements HandlerInterceptor {
+
+    private final StringRedisTemplate stringRedisTemplate;
+
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        // 1. 从请求头中获取登录token
+        String token = request.getHeader("authorization");
+        if (StrUtil.isBlank(token)) {
+            // 没有携带 authorization 请求头，说明还没有登录，直接放行。交给 LoginInterceptor 拦截器判断路径是否需要拦截
+            return true;
+        }
+        // 2. 基于Token获取redis中的用户
+        String tokenKey = LOGIN_USER_KEY + token;
+        Map<Object, Object> userMap = stringRedisTemplate.opsForHash().entries(tokenKey);
+        // 3. 判断用户是否存在或者过期
+        if (userMap.isEmpty()) {
+            return true;
+        }
+        // 5. 将查询到的Hash数据转为UserDTO对象
+        UserDTO userDTO = BeanUtil.fillBeanWithMap(userMap, new UserDTO(), false);
+        // 6. 存在，保存用户信息到 ThreadLocal
+        UserHolder.saveUser(userDTO);
+        // 7. 刷新token有效期
+        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL, TimeUnit.MINUTES);
+        // 8. 放行
+        return true;
+    }
+
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) throws Exception {
+        UserHolder.removeUser();
+    }
+}
+```
+
+```java
+/**
+ * @Author: charlie
+ * @CreateTime: Created in 2025/2/23 18:44
+ * @Description: 登录拦截器
+ * 在刷新拦截中，如果已经登录，TheadLocal中会保存用户信息
+ */
+public class LoginInterceptor implements HandlerInterceptor {
+
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        // 1. 判断是否需要拦截（ThreadLocal中是否有用户）
+        if (UserHolder.getUser() == null) {
+            // 没有用户，拦截，设置状态码
+            response.setStatus(401);
+            // 拦截
+            return false;
+        }
+        // 有用户，则放行
+        return true;
+    }
+}
+```
+
+## 2. 商户查询缓存
+
+**缓存（Cache）**就是数据交换的缓冲区，俗称的缓存就是缓冲区内的数据，一般从数据库中获取，存储于本地代码
+
+实际开发中,会构筑多级缓存来使系统运行速度进一步提升,例如:本地缓存与redis中的缓存并发使用
+
+**浏览器缓存**：主要是存在于浏览器端的缓存
+
+**应用层缓存：**可以分为tomcat本地缓存，比如之前提到的map，或者是使用redis作为缓存
+
+**数据库缓存：**在数据库中有一片空间是 buffer pool，增改查数据都会先加载到mysql的缓存中
+
+**CPU缓存：**当代计算机最大的问题是 cpu性能提升了，但内存读写速度没有跟上，所以为了适应当下的情况，增加了cpu的L1，L2，L3级的缓存
+
+### 2.1 缓存模型和思路
+
+**标准的操作方式就是查询数据库之前先查询缓存，如果缓存数据存在，则直接从缓存中返回，如果缓存数据不存在，再查询数据库，然后将数据存入redis。**
+
+![1653322097736](.\hmdp-imgs\1653322097736.png)
+
+
+
+### 2.2 缓存更新/淘汰策略
+
+- **内存淘汰**：redis自动进行，当redis内存达到咱们设定的`max-memery`的时候，会自动触发淘汰机制，淘汰掉一些不重要的数据(可以自己设置策略方式)
+- **超时剔除：**当我们给redis设置了过期时间`ttl`之后，redis会将超时的数据进行删除，方便咱们继续使用缓存
+- **主动更新：**我们可以手动调用方法把缓存删掉，通常用于解决缓存和数据库不一致问题
+
+![1653322506393](.\hmdp-imgs\1653322506393.png)
+
+#### 2.2.1 数据库缓存不一致解决方案
+
+**缓存的数据源自于数据库**，而**数据库的数据是会发生变化的**。如果**当数据库中数据发生变化，而缓存却没有同步，此时就会出现一致性问题。**
+
+有如下几种方案：
+
+- `Cache Aside Pattern`：人工编码方式，缓存调用者在更新完数据库后再去更新缓存，也称之为**双写方案**
+- `Read/Write Through Pattern`：由系统本身完成，数据库与缓存的问题交由系统本身处理
+- `Write Behind Caching Pattern`：调用者只操作缓存，其它线程去异步处理数据库，实现最终一致。
+
+![1653322857620](.\hmdp-imgs\1653322857620.png)
+
+先更新数据库，再更新缓存：
+
+- 如果每次操作数据库后，都操作缓存，但是中间没有人查询，那么更新工作只有最后一次生效，中间的更新动作意义并不大
+- 可以把缓存删除，等待再次查询时，将缓存中的数据加载出来
+
+### 2.3 实现商铺和数据库查询双写一致
+
+查询：根据id查询店铺时，如果缓存命中，则直接返回；如果缓存未命中，则查询数据库，将数据库结果写入缓存，并设置超时时间。
+
+```java
+public Result queryShopById(Long id) {
+    String key = CACHE_SHOPE_KEY + id;
+    // 1 从redis查询商铺缓存
+    String shopJson = stringRedisTemplate.opsForValue().get(key);
+	// 2 判断是否存在
+    if (StrUtil.isNotBlank(shopJson)) {
+        // 3 存在，直接返回
+        Shop shop = JSONUtil.toBean(shopJson, Shop.class);
+    	return Result.ok(shop);
+    }
+    // 4. 不存在，根据id查询数据库
+    Shop shop = getById(id);
+	// 5 不存在，返回错误
+    if (shop == null) {
+		return Result.fail("店铺不存在！");
+    }
+    // 6. 存在，写入redis
+    stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop), 30L, TimeUnit.MINUTES);
+    // 7 返回
+    return Result.ok(shop);
+}
+```
+
+修改：根据id修改店铺时，先修改数据库，再删除缓存
+
+```java
+@Transactional
+public Result update(Shop shop) {
+    Long id = shop.getById();
+    if (id == null) {
+        return Result.fail("店铺id不能为空");
+    }
+    // 1 更新数据库
+    updateById(shop);
+    // 2 删除缓存
+    stringRedisTemplate.delete(CACHE_SHOP_KEY + id);
+    return Result.ok();
+}
+```
+
+### 2.4 缓存穿透问题
+
+> 缓存穿透：客户端请求的数据在缓存和数据库中都不存在，这样缓存永远不会生效，这些请求都会达到数据库。
+
+
+
+### 2.5 缓存雪崩问题
+
+
+
+### 2.6 缓存击穿
+
+
+
+
+
+## 3. 优惠券秒杀
+
+
+
+## 4. 分布式锁
+
+
+
+## 5. 分布式锁-redission
+
+
+
+## 6. 秒杀优化
+
+
+
+## 7. Redis消息队列
+
+
+
+## 8. 达人探店
+
+
+
+## 9. 好友关注
+
+
+
+## 10. 附近商户
+
+
+
+## 11. 用户签到
+
+
+
+## 12. UV统计
 
 
 
