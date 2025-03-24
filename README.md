@@ -2131,9 +2131,30 @@ class Solution {
 }
 ```
 
+## 设计
 
+### LRU
 
+[146. LRU缓存](https://leetcode.cn/problems/lru-cache/description/)
 
+```java
+class LRUCache {
+    // 以正整数作为容量capacity初始化LRU缓存
+    public LRUCache(int capacity) {
+        
+    }
+    
+    // 如果关键字key存在于缓存中，则返回关键字的值，否则返回-1
+    public int get(int key) {
+        
+    }
+    
+    // 如果关键字key已经存在，则变更其数据值value；如果不存在，则向缓存中插入该组key-value。如果插入操作导致关键字数量超过capacity，则应该逐出最久未使用的关键字
+    public void put(int key, int value) {
+        
+    }
+}
+```
 
 
 
@@ -2559,6 +2580,11 @@ public class LoginInterceptor implements HandlerInterceptor {
 - 如果每次操作数据库后，都操作缓存，但是中间没有人查询，那么更新工作只有最后一次生效，中间的更新动作意义并不大
 - 可以把缓存删除，等待再次查询时，将缓存中的数据加载出来
 
+如何保证缓存与数据库的操作同时成功或失败？
+
+- 单体系统，将缓存与数据库操作放在一个事务
+- 分布式系统，利用TCC等分布式事务方案
+
 ### 2.3 实现商铺和数据库查询双写一致
 
 查询：根据id查询店铺时，如果缓存命中，则直接返回；如果缓存未命中，则查询数据库，将数据库结果写入缓存，并设置超时时间。
@@ -2606,23 +2632,427 @@ public Result update(Shop shop) {
 
 ### 2.4 缓存穿透问题
 
-> 缓存穿透：客户端请求的数据在缓存和数据库中都不存在，这样缓存永远不会生效，这些请求都会达到数据库。
+<font color="red">缓存穿透：客户端请求的数据在缓存和数据库中都不存在，这样缓存永远不会生效，这些请求都会达到数据库。</font>
 
+- 缓存空对象，并设置过期时间
+- 布隆过滤器
+- 增强id的复杂度，避免被猜测id规律
+- 做好热点参数的限流
 
+常见的解决方案有两种：
+
+- **缓存空对象**
+  - 优点：实现简单，维护方便
+  - 缺点：
+    - 额外的内存消耗
+    - 可能造成短期的不一致
+- **布隆过滤**
+  - 优点：内存占用少，没有多余key
+  - 缺点：
+    - 实现复杂
+    - 存在误判可能（布隆过滤器判断不存在，则一定不存在；判断存在，但可能不存在）
+
+![image-20250324191222800](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324191222800.png)
 
 ### 2.5 缓存雪崩问题
 
+<font color="red">缓存雪崩是指同一时间段大量的缓存key同时失效或者Redis服务宕机，导致大量请求达到数据库，带来巨大的压力</font>
 
+解决方案：
+
+- 给不同的key的TTL添加随机值
+- 利用Redis集群提高服务的可用性
+- 给缓存业务添加降级限流策略
+- 给业务添加多级缓存
 
 ### 2.6 缓存击穿
 
+<font color="red">缓存击穿也叫热点key问题，就是一个被高并发访问并且缓存重建业务复杂的key突然失效，大量请求访问会在瞬间到达数据库，给数据库带来巨大的冲击</font>
+
+缓存击穿的解决方案：
+
+- **互斥锁**
+- **逻辑过期**
+
+逻辑分析：假设线程1在查询缓存不存在之后，本来应该去查询数据库，然后把这个数据重新加载到缓存。此时，只要线程1走完这个逻辑，其它线程就都能从缓存中加载这些数据了，但是假设在线程1还没有走完缓存重建流程的时候，后续的线程2，线程3，线程4同时过来访问当前这个方法，那么这些线程都不能从缓存中查询道该数据，那么他们就会同一时刻去访问查询缓存，都没查到，接着同一时间去访问数据库，同时执行数据库代码，对数据库访问压力过大。
+
+#### 1. 互斥锁
+
+因为锁能实现互斥性。假设线程过来，只能一个一个地访问数据库，从而避免对数据库访问压力过大，但也会影响查询的性能，因为此时会让查询从并行变成了串行，可以采用`tryLock`+`double check`的方式来解决这样的问题。
+
+假设现在线程1过来访问，他查询缓存没有命中，但是此时他获得到了锁的资源，那么线程1就会一个人去执行逻辑，假设现在线程2过来，线程2在执行过程中，并没有获得到锁，那么线程2就可以进行到休眠，直到线程1把锁释放后，线程2获得到锁，然后再来执行逻辑，此时就能够从缓存中拿到数据了。
+
+![image-20250324204831038](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324204831038.png)
+
+> 核心思路：
+>
+> - 原来从缓存中查询不到数据后直接查询数据库，现在方案是进行查询之后，如果从缓存中没有查询道数据，则进行互斥锁的获取，获取互斥锁后，判断是否获得了锁，如果没有获取到，则休眠，过一会再进行尝试，直到获取到锁为止，才能进行查询。
+> - 如果获取到锁的线程，再去进行查询数据库，查询后将数据写入redis，再释放锁，返回数据，**利用互斥锁就能保证只有一个线程去执行操作数据库的逻辑，防止缓存击穿**
+> - 利用redis的`setnx`方法来表示获取锁
+
+```java
+// 获取锁
+private boolean tryLock(String key) {
+    Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
+    return Boolean.TRUE.equals(flag);
+}
+
+// 释放锁
+private void unlock(String key) {
+    stringRedisTemplate.delete(key);
+}
+```
+
+```java
+ public Shop queryWithMutex(Long id)  {
+        String key = CACHE_SHOP_KEY + id;
+        // 1、从redis中查询商铺缓存
+        String shopJson = stringRedisTemplate.opsForValue().get("key");
+        // 2、判断是否存在
+        if (StrUtil.isNotBlank(shopJson)) {
+            // 存在,直接返回
+            return JSONUtil.toBean(shopJson, Shop.class);
+        }
+        //判断命中的值是否是空值
+        if (shopJson != null) {
+            //返回一个错误信息
+            return null;
+        }
+        // 4.实现缓存重构
+        //4.1 获取互斥锁
+        String lockKey = "lock:shop:" + id;
+        Shop shop = null;
+        try {
+            boolean isLock = tryLock(lockKey);
+            // 4.2 判断否获取成功
+            if(!isLock){
+                //4.3 失败，则休眠重试
+                Thread.sleep(50);
+                return queryWithMutex(id);
+            }
+            //4.4 成功，根据id查询数据库
+             shop = getById(id);
+            // 5.不存在，返回错误
+            if(shop == null){
+                 //将空值写入redis
+                stringRedisTemplate.opsForValue().set(key,"",CACHE_NULL_TTL,TimeUnit.MINUTES);
+                //返回错误信息
+                return null;
+            }
+            //6.写入redis
+            			stringRedisTemplate.opsForValue().set(key,JSONUtil.toJsonStr(shop),CACHE_NULL_TTL,TimeUnit.MINUTES);
+
+        }catch (Exception e){
+            throw new RuntimeException(e);
+        }
+        finally {
+            //7.释放互斥锁
+            unlock(lockKey);
+        }
+        return shop;
+    }
+```
 
 
 
+#### 2. 逻辑过期
+
+<font color="red">异步构建缓存，缺点在于构建完缓存之前，返回的都是脏数据</font>
+
+> 方案分析：之所以会出现缓存击穿问题，主要原因是在于对`key`设置了过期时间，假设不设置过期时间，就不会有缓存击穿的问题，但是不设置过期时间，数据就一直占用内存，可以采用逻辑过期方案。
+
+将过期时间设置在redis的value中，而非直接作用于redis，后续通过逻辑去处理。假设线程1去查询缓存，然后从value中判断出来当前的数据已经过期，此时线程1去获取互斥锁，那么其它线程进行阻塞，获得了锁的线程会开启一个新的线程去进行数据重构逻辑，直到新开的线程完成这个逻辑，才释放锁，而线程1直接进行返回。假设现在线程3过来访问，由于线程2持有着锁，所以线程3无法获得锁，线程3也直接返回数据，只有等到新开的线程2把重建数据构建完后，其它线程才能走返回正确的数据。
+
+![image-20250324205316786](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324205316786.png)
+
+> 思路分析：
+>
+> - 当用户开始查询redis时，判断是否命中，如果没有则直接返回空数据，不查询数据库
+> - 而一旦命中，将value取出，判断value中的过期时间是否满足，如果没有过期，则直接返回redis中的数据
+> - 如果过期，则再开启独立线程后直接返回之前的护具，由独立线程去重构数据，重构完成后释放互斥锁
+
+```java
+private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
+public Shop queryWithLogicalExpire( Long id ) {
+    String key = CACHE_SHOP_KEY + id;
+    // 1.从redis查询商铺缓存
+    String json = stringRedisTemplate.opsForValue().get(key);
+    // 2.判断是否存在
+    if (StrUtil.isBlank(json)) {
+        // 3.存在，直接返回
+        return null;
+    }
+    // 4.命中，需要先把json反序列化为对象
+    RedisData redisData = JSONUtil.toBean(json, RedisData.class);
+    Shop shop = JSONUtil.toBean((JSONObject) redisData.getData(), Shop.class);
+    LocalDateTime expireTime = redisData.getExpireTime();
+    // 5.判断是否过期
+    if(expireTime.isAfter(LocalDateTime.now())) {
+        // 5.1.未过期，直接返回店铺信息
+        return shop;
+    }
+    // 5.2.已过期，需要缓存重建
+    // 6.缓存重建
+    // 6.1.获取互斥锁
+    String lockKey = LOCK_SHOP_KEY + id;
+    boolean isLock = tryLock(lockKey);
+    // 6.2.判断是否获取锁成功
+    if (isLock){
+        CACHE_REBUILD_EXECUTOR.submit( ()->{
+
+            try{
+                //重建缓存
+                this.saveShop2Redis(id,20L);
+            }catch (Exception e){
+                throw new RuntimeException(e);
+            }finally {
+                unlock(lockKey);
+            }
+        });
+    }
+    // 6.4.返回过期的商铺信息
+    return shop;
+}
+```
+
+
+
+方案对比：
+
+![image-20250324205633988](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324205633988.png)
+
+- **互斥锁方案：**
+  - 由于保证了互斥性，所以数据一致，且实现简单，因为仅仅需要加一把锁而已，也没其它事情需要操心，所以没有额外的内存消耗。
+  - 缺点：有锁就有死锁问题的发生，且只能串行执行性能肯定收到影响
+- **逻辑过期方案：**
+  - 线程读取过程中不需要等待，性能好，有一个额外的线程持有锁去进行重构数据
+  - 缺点：在重构数据完成前，其它的线程只能返回之前的数据，且实现起来麻烦
 
 ## 3. 优惠券秒杀
 
+### <font color="red">3.1 全局唯一ID</font>
 
+>  为什么需要全局唯一ID，而不使用数据库自增ID？
+>
+> - id规律性太明显。用户或者说商业对手很容易猜测出来我们的一些敏感信息，比如商城在一天时间内，卖出了多少单，这明显不合适。
+> - **首单表数据量的限制。mysql单表的容量不易超过500w，数据量过大时，需要考虑分表。但是拆分表之后，他们从逻辑上是同一张表，所以他们的id不能是一样的，于是乎需要保证id的唯一性。**
+
+全局ID生成器，是一种在分布式系统下原来生成全局唯一ID的工具，一般满足以下特性：
+
+- 唯一性
+- 递增性
+- 安全性
+- 高可用
+- 高性能
+
+![image-20250324213523036](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324213523036.png)
+
+ID的组成部分：符号位：1bit，永远为0
+
+时间戳：31bit，以秒为单位，可以使用69年
+
+序列号：32bit，秒内的计数器，支持每秒产生$2^{32}$个不同ID
+
+```java
+@Component
+@RequiredArgsConstructor
+public class RedisIdWorker {
+
+    private final StringRedisTemplate stringRedisTemplate;
+
+    /**
+     * 开始时间戳
+     */
+    private static final long BEGIN_TIMESTAMP = 1735689600L;
+
+    /**
+     * 时间戳位数
+     */
+    private static final long COUNT_BITS = 32L;
+
+    /**
+     * 生成唯一id
+     * @param keyPrefix 业务key前缀
+     * @return
+     */
+    public long nextId(String keyPrefix) {
+        // 1. 生成时间戳
+        LocalDateTime now = LocalDateTime.now();
+        long nowSecond = now.toEpochSecond(ZoneOffset.UTC);
+        long timestamp = nowSecond - BEGIN_TIMESTAMP;
+        // 2. 生成序列号
+        // 2.1 获取当前日期，精确到天
+        String date = now.format(DateTimeFormatter.ofPattern("yyyy:MM:dd"));
+        // 2.2 自增长
+        Long count = stringRedisTemplate.opsForValue().increment("icr:" + keyPrefix + ":" + date);
+        // 3. 拼接并返回
+        return timestamp << COUNT_BITS | count;
+    }
+
+}
+```
+
+下单时需要判断两点：
+
+- 秒杀是否开始或结束，如果尚未开始或已经结束则无法下单
+- 库存是否充足，不足则无法下单
+
+如果两者都满足，则扣减库存，创建订单，然后返回订单id，如果有一个条件不满足则直接结束。
+
+### 3.2 乐观锁解决超卖问题
+
+> 超卖问题引入：
+>
+> - 由于判断库存，扣减库存不是一个原子操作
+> - 多线程下，由于指令交错，导致库存超卖
+
+- **悲观锁**：悲观锁认为线程安全问题一定会发生，因此每次操作时都会进行加锁操作（`synchronized`和`Lock`），确保线程串行执行
+- **乐观锁**：乐观锁认为线程安全问题不一定发生，因此操作时不加锁，只有在更新数据时去判断有没有其它线程对数据做了修改。如果没有修改则认为是安全的，自己才更新数据；如果已经被其它线程修改，说明发生了安全问题，此时可以重试或异常。
+
+```java
+// 方式一：会有大量失败操作
+boolean success = seckillVoucherService.update()
+    			.setSql("stock = stock - 1")		// stock = stock - 1
+    			.eq("voucher_id", vocher_id)		// where id = ? and stock = ?
+    			.eq("stock", voucher.getStock())
+    			.update();
+
+// 方式二
+boolean success = seckillVoucherService.update()
+    			.setSql("stock = stock - 1")		// stock = stock - 1
+    			.eq("voucher_id", vocher_id)		// where id = ? and stock > 0
+    			.gt("stock", 0)
+    			.update();
+```
+
+### 3.3 优惠券秒杀-一人一单<font color="red">(事务失效)</font>
+
+问题：目前秒杀下单，一个用户可以同时下多单
+
+具体操作逻辑：
+
+- 秒杀是否开始/结束
+- 库存是否充足
+- 优惠券id和用户id是否已经下过单
+
+```java
+@Override
+public Result seckillVoucher(Long voucherId) {
+    // 5. 一人一单逻辑
+    // 5.1 用户id
+    Long userId = UserHolder.getUser().getId();
+    int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+    // 5.2.判断是否存在
+    if (count > 0) {
+        // 用户已经购买过了
+        return Result.fail("用户已经购买过一次！");
+    }
+
+    // 6. 扣减库存
+    boolean success = seckillVoucherService.update()
+            .setSql("stock= stock -1")
+            .eq("voucher_id", voucherId).update();
+    if (!success) {
+        //扣减库存
+        return Result.fail("库存不足！");
+    }
+    // ...
+}
+```
+
+> 存在问题：
+>
+> - 和之前一样，并发访问查询数据库问题，可能会导致<font color="yellow">超卖和一人多单</font>
+> - 乐观锁比较适合更新数据，现在插入数据，需要使用悲观锁操作
+
+方式一：使用`synchronized`锁住整个创建秒杀券订单方法
+
+```java
+@Transactional
+public synchronized Result createVoucherOrder(Long voucherId) {
+	Long userId = UserHolder.getUser().getId();
+         // 5.1.查询订单
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        // 5.2.判断是否存在
+        if (count > 0) {
+            // 用户已经购买过了
+            return Result.fail("用户已经购买过一次！");
+        }
+
+        // 6.扣减库存
+        boolean success = seckillVoucherService.update()
+                .setSql("stock = stock - 1") // set stock = stock - 1
+                .eq("voucher_id", voucherId).gt("stock", 0) // where id = ? and stock > 0
+                .update();
+        if (!success) {
+            // 扣减失败
+            return Result.fail("库存不足！");
+        }
+
+        // 7.创建订单
+        // 7.返回订单id
+        return Result.ok(orderId);
+}
+```
+
+这样添加锁，锁的粒度太粗了，在使用锁过程中，控制**锁粒度** 是一个非常重要的事情，因为如果锁的粒度太大，会导致每个线程进来都会锁住，所以我们需要去控制锁的粒度。
+
+方式二：对字符串常量池中的用户id加锁，此时不同用户之间不会相互阻塞
+
+```java
+@Transactional
+public Result createVoucherOrder(Long voucherId) {
+    Long userId = UserHolder.getUser().getId();
+    synchronized (userId.toString().intern()) {
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        if (count > 0) {
+            return Result.fail("用户已经购买过一次");
+        }
+        
+        // 6.扣减库存
+        boolean success = seckillVoucherService.update()
+                .setSql("stock = stock - 1") // set stock = stock - 1
+                .eq("voucher_id", voucherId).gt("stock", 0) // where id = ? and stock > 0
+                .update();
+        if (!success) {
+            // 扣减失败
+            return Result.fail("库存不足！");
+        }
+
+        // 7.创建订单
+        VoucherOrder voucherOrder = new VoucherOrder();
+        save(voucherOrder);
+        // 7.返回订单id
+        return Result.ok(orderId);
+    }
+}
+```
+
+<font color="red" size=4>问题一：因为当前方法被spring事务控制，如果在方法内部加锁，可能会导致当前事务还没有提交，但是锁已经释放</font>
+
+所以选择将当前方法整个包裹起来，确保事务不会出现问题
+
+```java
+Long userId = UserHolder.getUser().getId();
+synchronized (userId.toString().intern()) {
+    return this.createVoucherOrder(voucherId);
+}
+```
+
+<font color="red" size=4>问题二：因为调用方法是通过this的方式调用，事务要想生效，还得利用代理来生效，所以这个地方，需要获取到原始的事务对象，来操作事务</font>
+
+```java
+synchronized (userId.toString().intern()) {
+    IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+	return proxy.createVoucherOrder(voucherId);
+}
+```
+
+<font color="red" size=4>问题三：集群环境下的并发问题，通过加锁可以解决单机情况下的一人一单安全问题，但是在集群模式下就不行了</font>
+
+**集群模式下，部署多个tomcat，每个tomcat都有一个属于自己的jvm，那么同一个用户在不同tomcat服务其上锁住的String类型的内容一样，但是并不是同一个对象，因此无法实现互斥。在这种情况下，可以使用分布式锁来解决。**
+
+![image-20250324230241854](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324230241854.png)
 
 ## 4. 分布式锁
 
