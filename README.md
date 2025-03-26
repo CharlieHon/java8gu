@@ -2634,17 +2634,17 @@ public Result update(Shop shop) {
 
 <font color="red">缓存穿透：客户端请求的数据在缓存和数据库中都不存在，这样缓存永远不会生效，这些请求都会达到数据库。</font>
 
-- 缓存空对象，并设置过期时间
-- 布隆过滤器
+- **缓存空对象，并设置过期时间**
+- **布隆过滤器**
 - 增强id的复杂度，避免被猜测id规律
-- 做好热点参数的限流
+- 做好热点参数的限流。根据用户或者ip对接口进行限流，对于异常频繁的访问行为，还可以采取黑名单机制，例如对异常IP列入黑名单
 
 常见的解决方案有两种：
 
 - **缓存空对象**
   - 优点：实现简单，维护方便
   - 缺点：
-    - 额外的内存消耗
+    - **额外的内存消耗**
     - 可能造成短期的不一致
 - **布隆过滤**
   - 优点：内存占用少，没有多余key
@@ -2652,7 +2652,7 @@ public Result update(Shop shop) {
     - 实现复杂
     - 存在误判可能（布隆过滤器判断不存在，则一定不存在；判断存在，但可能不存在）
 
-![image-20250324191222800](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324191222800.png)
+![image-20250324191222800](.\hmdp-imgs\1653326156516.png)
 
 ### 2.5 缓存雪崩问题
 
@@ -2660,10 +2660,16 @@ public Result update(Shop shop) {
 
 解决方案：
 
-- 给不同的key的TTL添加随机值
-- 利用Redis集群提高服务的可用性
-- 给缓存业务添加降级限流策略
-- 给业务添加多级缓存
+针对Redis服务不可用的情况：
+
+- 采用Redis集群，避免单机出现问题整个缓存服务都没办法使用
+- 限流，避免同时处理大量的请求
+- 多级缓存，例如本地缓存+Redis缓存的组合，当Redis缓存出现问题时，还可以从本地缓存中获取到部分数据
+
+针对热点缓存失效的情况：
+
+- 设置不同的TTL，如添加随机值等
+- 缓存预热，也就是在程序启动后或运行过程中，主动将热点数据加载到缓存中。
 
 ### 2.6 缓存击穿
 
@@ -2682,11 +2688,11 @@ public Result update(Shop shop) {
 
 假设现在线程1过来访问，他查询缓存没有命中，但是此时他获得到了锁的资源，那么线程1就会一个人去执行逻辑，假设现在线程2过来，线程2在执行过程中，并没有获得到锁，那么线程2就可以进行到休眠，直到线程1把锁释放后，线程2获得到锁，然后再来执行逻辑，此时就能够从缓存中拿到数据了。
 
-![image-20250324204831038](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324204831038.png)
+![image-20250324204831038](.\hmdp-imgs\1653328288627.png)
 
 > 核心思路：
 >
-> - 原来从缓存中查询不到数据后直接查询数据库，现在方案是进行查询之后，如果从缓存中没有查询道数据，则进行互斥锁的获取，获取互斥锁后，判断是否获得了锁，如果没有获取到，则休眠，过一会再进行尝试，直到获取到锁为止，才能进行查询。
+> - 原来从缓存中查询不到数据后直接查询数据库，现在方案是进行查询之后，**如果从缓存中没有查询到数据，则进行互斥锁的获取**，获取互斥锁后，判断是否获得了锁，如果没有获取到，则休眠，过一会再进行尝试，直到获取到锁为止，才能进行查询。
 > - 如果获取到锁的线程，再去进行查询数据库，查询后将数据写入redis，再释放锁，返回数据，**利用互斥锁就能保证只有一个线程去执行操作数据库的逻辑，防止缓存击穿**
 > - 利用redis的`setnx`方法来表示获取锁
 
@@ -2761,15 +2767,15 @@ private void unlock(String key) {
 
 > 方案分析：之所以会出现缓存击穿问题，主要原因是在于对`key`设置了过期时间，假设不设置过期时间，就不会有缓存击穿的问题，但是不设置过期时间，数据就一直占用内存，可以采用逻辑过期方案。
 
-将过期时间设置在redis的value中，而非直接作用于redis，后续通过逻辑去处理。假设线程1去查询缓存，然后从value中判断出来当前的数据已经过期，此时线程1去获取互斥锁，那么其它线程进行阻塞，获得了锁的线程会开启一个新的线程去进行数据重构逻辑，直到新开的线程完成这个逻辑，才释放锁，而线程1直接进行返回。假设现在线程3过来访问，由于线程2持有着锁，所以线程3无法获得锁，线程3也直接返回数据，只有等到新开的线程2把重建数据构建完后，其它线程才能走返回正确的数据。
+将过期时间设置在redis的value中，而非直接作用于redis，后续通过逻辑去处理。假设线程1去查询缓存，然后从value中判断出来当前的数据已经过期，此时线程1去获取互斥锁，那么其它线程进行阻塞（**直接返回脏数据**），获得了锁的线程会开启一个新的线程去进行数据重构逻辑，直到新开的线程完成这个逻辑，才释放锁，而线程1直接进行返回。假设现在线程3过来访问，由于线程2持有着锁，所以线程3无法获得锁，线程3也直接返回数据，只有等到新开的线程2把重建数据构建完后，其它线程才能走返回正确的数据。
 
-![image-20250324205316786](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324205316786.png)
+![image-20250324205316786](.\hmdp-imgs\1653328663897.png)
 
 > 思路分析：
 >
-> - 当用户开始查询redis时，判断是否命中，如果没有则直接返回空数据，不查询数据库
+> - 当用户开始查询redis时，判断是否命中，**如果没有（逻辑过期策略下，缓存不存在说明缓存穿透，数据库中也不存在该数据）则直接返回空数据**，不查询数据库
 > - 而一旦命中，将value取出，判断value中的过期时间是否满足，如果没有过期，则直接返回redis中的数据
-> - 如果过期，则再开启独立线程后直接返回之前的护具，由独立线程去重构数据，重构完成后释放互斥锁
+> - **如果过期，则再开启独立线程后直接返回之前的数据，由独立线程去重构数据，重构完成后释放互斥锁**
 
 ```java
 private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
@@ -2819,7 +2825,7 @@ public Shop queryWithLogicalExpire( Long id ) {
 
 方案对比：
 
-![image-20250324205633988](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324205633988.png)
+![image-20250324205633988](.\hmdp-imgs\1653357522914.png)
 
 - **互斥锁方案：**
   - 由于保证了互斥性，所以数据一致，且实现简单，因为仅仅需要加一把锁而已，也没其它事情需要操心，所以没有额外的内存消耗。
@@ -2827,6 +2833,13 @@ public Shop queryWithLogicalExpire( Long id ) {
 - **逻辑过期方案：**
   - 线程读取过程中不需要等待，性能好，有一个额外的线程持有锁去进行重构数据
   - 缺点：在重构数据完成前，其它的线程只能返回之前的数据，且实现起来麻烦
+
+### 2.7 缓存预热如何实现？
+
+常见的缓存预热方式两种：
+
+1. 使用**定时任务**。比如`xxl-job`来定时触发缓存预热逻辑，将数据库中的热点数据查询出来并存入缓存中
+2. 使用**消息队列**。异步地进行缓存预热，将数据库中地热点数据地主键或者ID发送到消息队列中，然后由缓存服务消费消息队列中的数据，根据主键或者ID查询数据库并更新缓存。
 
 ## 3. 优惠券秒杀
 
@@ -2845,7 +2858,7 @@ public Shop queryWithLogicalExpire( Long id ) {
 - 高可用
 - 高性能
 
-![image-20250324213523036](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324213523036.png)
+![image-20250324213523036](.\hmdp-imgs\1653363172079.png)
 
 ID的组成部分：符号位：1bit，永远为0
 
@@ -2936,10 +2949,28 @@ boolean success = seckillVoucherService.update()
 - 优惠券id和用户id是否已经下过单
 
 ```java
+
 @Override
 public Result seckillVoucher(Long voucherId) {
-    // 5. 一人一单逻辑
-    // 5.1 用户id
+    // 1.查询优惠券
+    SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+    // 2.判断秒杀是否开始
+    if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
+        // 尚未开始
+        return Result.fail("秒杀尚未开始！");
+    }
+    // 3.判断秒杀是否已经结束
+    if (voucher.getEndTime().isBefore(LocalDateTime.now())) {
+        // 尚未开始
+        return Result.fail("秒杀已经结束！");
+    }
+    // 4.判断库存是否充足
+    if (voucher.getStock() < 1) {
+        // 库存不足
+        return Result.fail("库存不足！");
+    }
+    // 5.一人一单逻辑
+    // 5.1.用户id
     Long userId = UserHolder.getUser().getId();
     int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
     // 5.2.判断是否存在
@@ -2948,7 +2979,7 @@ public Result seckillVoucher(Long voucherId) {
         return Result.fail("用户已经购买过一次！");
     }
 
-    // 6. 扣减库存
+    //6，扣减库存
     boolean success = seckillVoucherService.update()
             .setSql("stock= stock -1")
             .eq("voucher_id", voucherId).update();
@@ -2956,14 +2987,25 @@ public Result seckillVoucher(Long voucherId) {
         //扣减库存
         return Result.fail("库存不足！");
     }
-    // ...
+    //7.创建订单
+    VoucherOrder voucherOrder = new VoucherOrder();
+    // 7.1.订单id
+    long orderId = redisIdWorker.nextId("order");
+    voucherOrder.setId(orderId);
+
+    voucherOrder.setUserId(userId);
+    // 7.3.代金券id
+    voucherOrder.setVoucherId(voucherId);
+    save(voucherOrder);
+
+    return Result.ok(orderId);
 }
 ```
 
 > 存在问题：
 >
 > - 和之前一样，并发访问查询数据库问题，可能会导致<font color="yellow">超卖和一人多单</font>
-> - 乐观锁比较适合更新数据，现在插入数据，需要使用悲观锁操作
+> - **乐观锁比较适合更新数据，现在插入数据，需要使用悲观锁操作**
 
 方式一：使用`synchronized`锁住整个创建秒杀券订单方法
 
@@ -3039,7 +3081,7 @@ synchronized (userId.toString().intern()) {
 }
 ```
 
-<font color="red" size=4>问题二：因为调用方法是通过this的方式调用，事务要想生效，还得利用代理来生效，所以这个地方，需要获取到原始的事务对象，来操作事务</font>
+<font color="red" size=4>问题二：因为调用方法实际上是通过this的方式调用，事务要想生效，还得利用代理来生效，所以这个地方，需要获取到原始的事务对象，来操作事务</font>
 
 ```java
 synchronized (userId.toString().intern()) {
@@ -3052,17 +3094,361 @@ synchronized (userId.toString().intern()) {
 
 **集群模式下，部署多个tomcat，每个tomcat都有一个属于自己的jvm，那么同一个用户在不同tomcat服务其上锁住的String类型的内容一样，但是并不是同一个对象，因此无法实现互斥。在这种情况下，可以使用分布式锁来解决。**
 
-![image-20250324230241854](F:\HX_Study\Work\my_offer\java8gu\imgs\image-20250324230241854.png)
+![image-20250324230241854](.\hmdp-imgs\1653374044740.png)
 
 ## 4. 分布式锁
 
+> **分布式锁：满足分布式系统或集群模式下多进程可见并且互斥的锁。**
+>
+> 核心思想：让大家使用使用同一把锁，只要大家使用的同一把锁，就可以锁住进程，让程序串行执行。
 
+![1653374296906](.\hmdp-imgs\1653374296906.png)
+
+**分布式锁需要满足的条件？**
+
+- **可见性**：多个线程都能看到相同的结果，即多个进程之间都能感知到变化的意思
+- **互斥性**：互斥是分布式锁的最基本条件，使得程序串行执行
+- **高可用**：程序不易崩溃，时时刻刻都保证较高的可用性
+- **高性能**：由于加锁本身就让性能降低，所以对于分布式锁本身需要他较高的加锁性能和释放锁性能
+- **安全性**：安全也是程序中必不可少的一环
+
+<font color="red" size=5>常见的分布式锁实现？</font>
+
+1. MySQL：mysql本身就带有锁机制，但是由于mysql性能本身一般，所以采用分布式锁的情况下，使用的较少
+2. Redis：利用`setnx`方法，如果插入key成功，表示获得了锁，如果有人插入成功，其它人插入失败则表示无法获得锁，利用这个逻辑来实现分布式锁。
+3. `Zookeeper`：zk利用节点的唯一性和有序性来实现互斥
+
+![1653382219377](.\hmdp-imgs\1653382219377.png)
+
+使用Redis实现分布式锁的两个基本方法：
+
+- 获取锁
+  - 互斥：确保只能有一个线程获取锁，`setnx key value`
+  - 非阻塞：尝试一次，成功返回true，失败返回false
+- 释放锁
+  - 手动释放：`del key`
+  - 超时释放：获取锁时添加一个超时时间
+
+### 4.1 实现分布式锁V1
+
+```java
+public interface ILock {
+
+    /**
+     * 尝试获取锁
+     * @param timeoutSec 锁过期时间，单位秒
+     * @return 成功返回true，失败返回false
+     */
+    boolean tryLock(long timeoutSec);
+
+    /**
+     * 释放锁
+     */
+    void unlock();
+}
+```
+
+```java
+class SimpleRedisLock implements ILock {
+    private String name;
+    private static final String KEY_PREFIX = "lock:";
+    
+    private StringRedisTemplate stringRedisTemplate;
+    
+    // 加锁，同时增加过期时间
+    public boolean tryLock(long timeoutSec) {
+        // 获取线程标识
+        String threadId = Thread.currentThread().getId();
+        Boolean success = stringRedisTemplate.opsForValue().setIfAbsent(KEY_PREFIX + name, threadId + "", timeoutSec);
+        return Boolean.TURE.equals(success);
+    }
+    
+    // 释放锁逻辑
+    public void unlock() {
+        // 通过 del 删除锁
+        stringRedisTemplate.delete(KEY_PREFIX + name);
+    }
+}
+```
+
+### 4.2 Redis分布式锁误删情况
+
+逻辑说明：
+
+持有锁的线程在锁的内部出现了阻塞，导致他的锁自动释放，这时其他线程，线程2来尝试获得锁，就拿到了这把锁，然后线程2在持有锁执行过程中，线程1反应过来，继续执行，而线程1执行过程中，走到了删除锁逻辑，此时就会把本应该属于线程2的锁进行删除，这就是误删别人锁的情况说明
+
+解决方案：**解决方案就是在每个线程释放锁的时候，去判断一下当前这把锁是否属于自己，如果属于自己，则不进行锁的删除**，假设还是上边的情况，线程1卡顿，锁自动释放，线程2进入到锁的内部执行逻辑，此时线程1反应过来，然后删除锁，但是线程1，一看当前这把锁不是属于自己，于是不进行删除锁逻辑，当线程2走到删除锁逻辑时，如果没有卡过自动释放锁的时间点，则判断当前这把锁是属于自己的，于是删除这把锁。
+
+![1653385920025](.\hmdp-imgs\1653385920025.png)
+
+### 4.3 解决Redis分布式锁误删问题
+
+```java
+private static final String ID_PREFIX = UUID.randomUUID().toString(true) + "-";
+
+@Override
+public boolean tryLock(long timeoutSec) {
+   // 获取线程标示
+   String threadId = ID_PREFIX + Thread.currentThread().getId();
+   // 获取锁
+   Boolean success = stringRedisTemplate.opsForValue()
+                .setIfAbsent(KEY_PREFIX + name, threadId, timeoutSec, TimeUnit.SECONDS);
+   return Boolean.TRUE.equals(success);
+}
+
+public void unlock() {
+    // 获取线程标示
+    String threadId = ID_PREFIX + Thread.currentThread().getId();
+    // 获取锁中的标示
+    String id = stringRedisTemplate.opsForValue().get(KEY_PREFIX + name);
+    // 判断标示是否一致
+    if(threadId.equals(id)) {
+        // 释放锁
+        stringRedisTemplate.delete(KEY_PREFIX + name);
+    }
+}
+```
+
+**有关代码实操说明：**
+
+在我们修改完此处代码后，我们重启工程，然后启动两个线程，第一个线程持有锁后，手动释放锁，第二个线程 此时进入到锁内部，再放行第一个线程，此时第一个线程由于锁的value值并非是自己，所以不能释放锁，也就无法删除别人的锁，此时第二个线程能够正确释放锁，通过这个案例初步说明我们解决了锁误删的问题。
+
+### 4.4 分布式锁的原子性问题
+
+![1653387764938](.\hmdp-imgs\1653387764938.png)
+
+更极端的误删情况：
+
+1. 一人一单问题下，锁住的是用户的id，即`SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);`，如`lock:order:1`，
+2. 当多个线程持有相同的用户id时。在线程a已经判断锁是自己的准备删除时，锁过期，另一个线程b获取锁。此时线程a在执行删除锁的命令，就删除了线程b的锁。
+3. <font color="yellow">问题所在</font>：线程a拿锁、比较锁和删除锁的操作不是原子性的
+
+![1653387764938](.\hmdp-imgs\1653387764938.png)
+
+### 4.5 Lua脚本解决多条命令原子性问题
+
+Redis提供了Lua脚本功能，在一个脚本中编写多条Redis命令，确保多条命令执行时的原子性。
+
+- Redis提供的调用函数：`redis.call('命令名称', 'key', '其它参数', ...)`
+- `redis.call('set', 'name', 'jack')`
+
+![1653392181413](.\hmdp-imgs\1653392181413.png)
+
+![1653392218531](.\hmdp-imgs\1653392218531.png)
+
+如果脚本中的key，value不想写死，可以作为参数传递。key类型参数会放入KEYS数组，其它参数会放入ARGV数组，脚本可以从KEYS和ARGV数组获取这些参数：
+
+![1653392438917](.\hmdp-imgs\1653392438917.png)
+
+```lua
+-- 这里的 KEYS[1] 就是锁的key，这里的ARGV[1] 就是当前线程标示
+-- 获取锁中的标示，判断是否与当前线程标示一致
+if (redis.call('GET', KEYS[1]) == ARGV[1]) then
+  -- 一致，则删除锁
+  return redis.call('DEL', KEYS[1])
+end
+-- 不一致，则直接返回
+return 0
+```
+
+**Java代码**
+
+```java
+@AllArgsConstructor
+public class SimpleRedisLock implements ILock {
+
+    private String name;
+    private StringRedisTemplate stringRedisTemplate;
+
+    private static final String KEY_PREFIX = "lock:";
+
+    /**
+     * 使用UUID标识不同JVM的线程
+     */
+    private static final String ID_PREFIX = UUID.randomUUID().toString(true) + "-";
+
+    private static final DefaultRedisScript<Long> UNLOCK_SCRIPT;
+
+    static {
+        UNLOCK_SCRIPT = new DefaultRedisScript<>();
+        UNLOCK_SCRIPT.setLocation(new ClassPathResource("unlock.lua"));
+        UNLOCK_SCRIPT.setResultType(Long.class);
+    }
+
+    @Override
+    public boolean tryLock(long timeoutSec) {
+        // 获取线程表示
+        String threadId = ID_PREFIX + Thread.currentThread().getId();
+        // 获取锁
+        Boolean success = stringRedisTemplate.opsForValue()
+                .setIfAbsent(KEY_PREFIX + name, threadId, timeoutSec, TimeUnit.SECONDS);
+        return Boolean.TRUE.equals(success);
+    }
+
+    @Override
+    public void unlock() {
+
+        // 调用lua脚本
+        stringRedisTemplate.execute(UNLOCK_SCRIPT,
+                Collections.singletonList(KEY_PREFIX + name),
+                ID_PREFIX + Thread.currentThread().getId()
+        );
+    }
+}
+```
+
+### 4.6 总结
+
+基于Redis的分布式锁实现思路：
+
+- 利用`set nx ex`获取锁，并设置过期时间
+- 释放锁时先判断线程标识是否与自己一致，一致则删除锁
+  - 利用set nx满足互斥性
+  - 利用set ex保证故障时锁依然能释放，避免死锁，提高安全性
+  - 利用Redis集群保证高可用和高并发特性
 
 ## 5. 分布式锁-redission
+
+### 5.1 基于setnx实现的分布式锁的问题
+
+**重入问题**：重入问题是指获得锁的线程可以再次进入相同的锁的代码块中，可重入锁的意义在于防止思索。`synchronized`和`Lock`锁都是可重入的
+
+**不可重试**：目前分布式锁只能尝试一次，合理的情况应该是当线程获取锁失败后，应该能再次尝试获得锁
+
+**超时释放**：在加锁时增加了过期时间，这样可以防止死锁，但是如果卡顿时间超长，虽然采用了lua表达式防止删锁的时候，误删别人的锁，但是毕竟没有锁住，有安全隐患。
+
+**主从一致性**：如果Redis提供了主从集群，当我们向集群中写入数据时，主机需要异步的将数据同步给从机，而万一在同步过去之前，主机宕机了，就会出现死锁问题。
+
+![1653546070602](.\hmdp-imgs\1653546070602.png)
+
+### 5.2 分布式锁Redisson
+
+> `Redisson`是一个在Redis的基础上实现的Java驻内存数据网格（In-Memory Data Grid）。它不仅提供了一系列的分布式的Java常用对象，还提供了许多分布式服务，其中就包含了各种分布式锁的实现。
+
+```xml
+<!--1. 引入redisson依赖-->
+<dependency>
+    <groupId>org.redisson</groupId>
+    <artifactId>redisson</artifactId>
+    <version>3.27.2</version>
+</dependency>
+```
+
+```java
+// 2. 配置Redission客户端
+@Configuration
+public class RedissonConfig {
+    @Bean
+    public RedissonClient redissonClient(){
+        // 配置
+        Config config = new Config();
+        config.useSingleServer()
+            .setAddress("redis://192.168.150.101:6379")
+            .setPassword("123321");
+        // 创建RedissonClient对象
+        return Redisson.create(config);
+    }
+}
+```
+
+注入redisson，并使用
+
+```java
+@Resource
+private RedissonClient redissonClient;
+
+@Override
+public Result seckillVoucher(Long voucherId) {
+        // 1.查询优惠券
+        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+        // 2.判断秒杀是否开始
+        if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
+            // 尚未开始
+            return Result.fail("秒杀尚未开始！");
+        }
+        // 3.判断秒杀是否已经结束
+        if (voucher.getEndTime().isBefore(LocalDateTime.now())) {
+            // 尚未开始
+            return Result.fail("秒杀已经结束！");
+        }
+        // 4.判断库存是否充足
+        if (voucher.getStock() < 1) {
+            // 库存不足
+            return Result.fail("库存不足！");
+        }
+        Long userId = UserHolder.getUser().getId();
+        
+    	//创建锁对象 这个代码不用了，因为我们现在要使用分布式锁
+        //SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+        //获取锁对象
+        boolean isLock = lock.tryLock();
+       
+		//加锁失败
+        if (!isLock) {
+            return Result.fail("不允许重复下单");
+        }
+        try {
+            //获取代理对象(事务)
+            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+            return proxy.createVoucherOrder(voucherId);
+        } finally {
+            //释放锁
+            lock.unlock();
+        }
+ }
+```
+
+### 5.4 分布式锁-redisson锁重试和WatchDog机制
+
+`Lock`和`synchronized`可重入原理：
+
+在Lock锁中，他是借助于底层的一个voaltile的一个state变量来记录重入的状态的，比如当前没有人持有这把锁，那么state=0，假如有人持有这把锁，那么state=1，如果持有这把锁的人再次持有这把锁，那么state就会+1 ，如果是对于synchronized而言，他在c语言代码中会有一个count，原理和state类似，也是重入一次就加一，释放一次就-1 ，直到减少成0 时，表示当前这把锁没有被人持有。  
+
+<font color="red" size=5>Redisson支持可重入锁</font>
+
+>  在分布式锁中，redisson采用`hash`结构来存储锁，其中大key表示这把锁是否存在，小key表示当前锁被那个线程持有。
+>
+> lock-key：
+>
+> - 线程表示：重入计数
+>
+> 以下是`lock.tryLock(lockKey)`加锁，底层指定的lua脚本，一共有三个参数：
+>
+> - KEYS[1]：锁名称
+> - ARGV[1]：锁失效时间
+> - ARGV[2]：id+":"+threadId；锁的小，key，即线程标识
+
+```lua
+// 1. exists 判断是否存在 key 为 lockKey 的，0表示不存在
+// hset 往redis中写入数据，写成一个hash结构
+// Lock { id + ":" + threadId: 1 }
+// 2. hexists 判断 lockKey 中的线程标识(ARGV[2])是否是当前线程
+// 如果是，则计数加1。并更新过期时间
+// 3. 如果以上两个条件都不满足，则返回 锁过期时间，退出抢锁逻辑
+// 4. 如果返回 nil，则代表对应前两个条件；如果返回的不是null，则走第三个分支，在源码处会进行while(true)的自旋抢锁。
+"if (redis.call('exists', KEYS[1]) == 0) then " +
+                  "redis.call('hset', KEYS[1], ARGV[2], 1); " +
+                  "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                  "return nil; " +
+              "end; " +
+              "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                  "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                  "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                  "return nil; " +
+              "end; " +
+              "return redis.call('pttl', KEYS[1]);"
+```
+
+<font color="red" size=8>Redisson中watchDog机制</font>
+
+
 
 
 
 ## 6. 秒杀优化
+
+
 
 
 
