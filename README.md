@@ -602,13 +602,24 @@ public ThreadPoolExecutor(
   - 通过一个类的全限定名来获取其定义的二进制字节流
   - 将这个字节流所代表的静态存储结构转化为方法区的运行时数据结构
   - 在Java堆中生成一个代表该类的`java.lang.Class`对象，作为方法区中这些数据的访问入口
-- **验证：确保被加载的类的正确性。**
-- <font color="green" size=4>准备：为类的静态变量分配内存，并将其初始化为默认值。</font>
-  - 初始值通常情况下是数据类型**默认的零值**（如`0`、`0L`、`null`、`false`等）
-  - 数据初始化时没有对数组的各元素赋值，那么其中的元素将根据对应的数据类型而被赋予默认的零值
-  - `static final`类型变量，如果初始化值是编译时常量，则在准备阶段完成赋值，如`public static final int x = 10;`。如果值需要在运行时计算（如`public static final int x = someMethod();`），则在初始化阶段赋值。
-- **解析：把类中的符号引用转换为直接引用**。
+  - **加载是懒惰进行**
+- 链接
+  - **验证：确保被加载的类的正确性。**
+  - <font color="green" size=4>准备：为类的静态变量分配内存，并将其初始化为默认值。</font>
+    - 初始值通常情况下是数据类型**默认的零值**（如`0`、`0L`、`null`、`false`等）
+    - 数据初始化时没有对数组的各元素赋值，那么其中的元素将根据对应的数据类型而被赋予默认的零值
+    - `static final`类型变量，如果初始化值是编译时常量，则在准备阶段完成赋值，如`public static final int x = 10;`。如果值需要在运行时计算（如`public static final int x = someMethod();`），则在初始化阶段赋值。
+
+  - **解析：把类中的符号引用转换为直接引用**。
+
 - <font color="green" size=4>初始化：执行类的静态代码块（`static {}`）和静态变量的显式初始化。</font>
+  - **初始化是懒惰执行**，满足条件有：
+    1. `main`方法所在类
+    2. 首次访问静态方法或静态变量（非final）
+    3. 子类初始化，导致父类初始化
+    4. `Class.forName(类名, true, loader)`或者`Class.forName(类名)`
+    5. `new`，`clone`，反序列化
+
 
 <font color="red" size=5>类初始化时机？</font>
 
@@ -630,6 +641,11 @@ public ThreadPoolExecutor(
 > 6. **返回对象引用**
 
 #### <font color="red" size=5>类加载器与双亲委派机制</font>
+
+**双亲委派机制：优先委派上级类加载器进行加载，如果上级类加载器**
+
+1. 能找到这个类，由上级加载，加载后该类也对下级类加载器可见
+2. 找不到这个类，则下级类加载器才有资格执行加载，下级加载的类 上级不可见
 
 JVM中内置了三个重要的`ClassLoader`：
 
@@ -698,6 +714,10 @@ protected Class<?> loadClass(String name, boolean resolve)
 ```
 
 #### JVM内存结构
+
+堆内存（Heap Memory）是JVM管理的最大一块内存区域，用于存储所有对象示例和数组。它是线程共享的，由垃圾收回器（GC）自动管理，是Java内存模型的核心部分。
+
+栈内存（Stack Memory）是线程私有的运行时内存区域，用于存储方法调用，局部变量和部分对象引用。**每个线程在创建时都会分配一个独立的栈内存，其声明周期与线程相同。**
 
 
 
@@ -785,6 +805,95 @@ GC规模:
 1. `Minor GC`发生在新生代的垃圾回收，暂停时间短
 2. `Mixed GC`新生代+老年代部分区域的垃圾回收，`G1`收集器特有
 3. `Full GC`：新生代+老年代完整垃圾回收，暂停时间长，应尽力避免
+
+#### 三色标记与并发漏标问题
+
+用三种颜色记录对象的标记状态：
+
+1. **黑色——已标记**
+2. **灰色——标记中**
+3. **白色——还未标记**
+
+漏标问题——记录标记过程中变化
+
+1. `incremental update`
+   1. 只要赋值发生，被赋值的对象就会被记录
+2. `Snapshot At The Beginning, SATB`
+   1. 新加对象会被记录
+   2. 被删除引用关系的对象也被记录
+
+#### 垃圾回收器
+
+`Parallel GC`
+
+1. `eden`内存不足发生`Minor GC`，标记复制 STW
+2. `old`内存不足发生`Full GC`，标记整理 STW
+3. <font color="red">注重吞吐量</font>
+
+`ConcurrentMarkSweep GC`
+
+1. `old`**并发标记**，重新标记时需要STW，**并发清除**
+2. `Failback Full GC`：
+3. <font color="red">注重响应时间</font>
+
+`G1 GC`
+
+1. <font color="red">兼顾响应时间和吞吐量</font>
+2. 划分成多个区域，每个区域都可以充当`eden`、`survivor`、`old`、`humongous`
+3. **新生代回收**：eden内存不足，标记复制 STW
+4. **并发标记**：old**并发标记**，重新标记时需要 STW
+5. **混合收集**：并发标记完成，开始**混合收集**，参与复制的有eden,survivor,old，其中old会根据暂停时间目标，选择部分回收价值高的区域，复制时 STW
+6. `Failback Full GC`
+
+#### 项目中什么情况下会内存溢出，怎么解决？
+
+- **误用线程池导致的内存溢出**
+
+情景一：使用固定大小的线程池
+
+```java
+public class TestOomThreadPool {
+    public static void main(String[] args) {
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        while (true) {
+			executor.submit(() -> {
+                try {
+                    Thread.sleep(50);	// 模拟发送延迟
+                    System.out.println("send sms...");	// 模拟发送短信
+                } catch (InterruptedExeception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+    }
+}
+```
+
+```java
+// 因为 Executors.newFixedThreadPool 底层使用无界队列，任务堆积可能导致内存溢出
+// 建议：使用 new ThreadPoolExecutor() 自定义线程池，使用固定大小的线程池
+public static ExecutorService newFixedThreadPool(int nThreads) {
+    return new ThreadPoolExecutor(nThreads, nThreads,
+                                 0L, TimeUnit.MILLISECONDS,
+                                  // 使用无界队列（最大值Integer.MAX_VALUE）
+                                 new LinkedBlockingQueue<Runnable>());
+}
+```
+
+情景二：使用带缓冲的线程池
+
+```java
+// 无法控制创建线程的数量，因为线程创建太多，导致 OutOfMemoryError
+public static ExecutorService newCachedThreadPool() {
+    return new ThreadPoolExecutor(0, Integer.MAX_VALUE, 
+                                 60L, TimeUnit.MILLISECONDS, 
+                                 new SynchronousQueue<Runnable>());
+}
+```
+
+- **查询数据量太大导致的内存溢出**
+
+- **动态生成类导致的内存溢出**
 
 
 
@@ -2291,6 +2400,12 @@ ping在进入内核态最后也是调用的`socket_sendmsg`方法，进入到网
 ```
 
 但是，客户端`connect`时，不能使用`0.0.0.0`，必须知名要连接哪个服务器IP
+
+##### 总结
+
+- `127.0.0.1`是回环地址，`localhost`是域名，但默认等于`127.0.0.1`
+- `ping`回环地址和`ping`本机地址，是一样的，走的是`lo0`回环网卡，会经过网络层和数据链路层等逻辑，但是最后将数据插入到一个链表后就软中断通知`ksoftirqd`来进行**收数据**的逻辑，**不会出网络**。所以<font color="red" size=4>断网了也能`ping`通回环地址</font>
+- 如果服务器`listen`的是`0.0.0.0`，那么此时用`127.0.0.1`和本机地址**都可以**访问到服务
 
 ## 操作系统
 
