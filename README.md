@@ -647,6 +647,13 @@ public ThreadPoolExecutor(
 1. 能找到这个类，由上级加载，加载后该类也对下级类加载器可见
 2. 找不到这个类，则下级类加载器才有资格执行加载，下级加载的类 上级不可见
 
+| 名称                      | 加载哪的类              | 说明                         |
+| ------------------------- | ----------------------- | ---------------------------- |
+| `Bootstrap ClasssLoader`  | `JAVA_HOME/jre/lib`     | 无法直接访问                 |
+| `Extension ClassLoader`   | `JAVA_HOME/jre/lib/ext` | 上级为 Bootstrap，显示为null |
+| `Application ClassLoader` | `classpath`             | 上级为 Extension             |
+| 自定义类加载器            | 自定以                  | 上级为 Application           |
+
 JVM中内置了三个重要的`ClassLoader`：
 
 1. `BootstrapClassLoader`（**启动类加载器**）：最顶层的加载类，由C++实现，通常表示为null，没有父级，主要用来加载JDK内部的核心类库（`%JAVA_HOME%/lib`）以及被 `-Xbootclasspath`参数指定的路径下的所有类。
@@ -667,7 +674,11 @@ JVM中内置了三个重要的`ClassLoader`：
 
 > **JVM 判定两个 Java 类是否相同的具体规则**：JVM 不仅要看类的全名是否相同，还要看加载此类的类加载器是否一样。只有两者都相同的情况，才认为两个类是相同的。即使两个类来源于同一个 `Class` 文件，被同一个虚拟机加载，只要加载它们的类加载器不同，那这两个类就必定不相同。
 
-双亲委派机制的好处：**保证了Java程序的稳定运行，可以避免类的重复加载，也保证了Java的核心API不被篡改。**
+双亲委派机制的好处：
+
+- 让上级类加载器中的类对下级共享（反之不行），即能让你的类能依赖到jdk提供的核心类
+- 让类的加载有优先次序，保证核心类优先加载。
+- **保证了Java程序的稳定运行，可以避免类的重复加载，也保证了Java的核心API不被篡改。**
 
 ```java
 // ClassLoader 中的 loadClass 方法定义了 双亲委派机制 逻辑
@@ -712,6 +723,40 @@ protected Class<?> loadClass(String name, boolean resolve)
     }
 }
 ```
+
+#### 类加载——能否假冒一个System类？
+
+不能。类加载器在加载类的时候会检测类的全路径名，如果是`java.* class`即全路径以`java`开头都会抛出安全异常？
+
+```java
+    private ProtectionDomain preDefineClass(String name,
+                                            ProtectionDomain pd)
+    {
+        if (!checkName(name))
+            throw new NoClassDefFoundError("IllegalName: " + name);
+
+        // Note:  Checking logic in java.lang.invoke.MemberName.checkForTypeAlias
+        // relies on the fact that spoofing is impossible if a class has a name
+        // of the form "java.*"
+        if ((name != null) && name.startsWith("java.")
+                && this != getBuiltinPlatformClassLoader()) {
+            throw new SecurityException
+                ("Prohibited package name: " +
+                 name.substring(0, name.lastIndexOf('.')));
+        }
+        if (pd == null) {
+            pd = defaultDomain;
+        }
+
+        if (name != null) {
+            checkCerts(name, pd.getCodeSource());
+        }
+
+        return pd;
+    }
+```
+
+
 
 #### JVM内存结构
 
@@ -895,6 +940,48 @@ public static ExecutorService newCachedThreadPool() {
 
 - **动态生成类导致的内存溢出**
 
+#### 对象引用类型分为哪几类？
+
+![image-20250330144639594](.\imgs\image-20250330144639594.png)
+
+1. **强引用**
+   1. 普通变量赋值即为强引用，如`A a = new A();`
+   2. 通过`GC Root`的引用链，如果强引用不到该对象，该对象才能被回收
+2. **软引用（SoftReference）**
+   1. 例如：`SoftReference a = new SoftReference(new A());`
+   2. 如果仅有软引用该对象时，首次垃圾回收不会回收该对象，如果内存仍不足，再次回收时才会释放对象
+   3. 软引用自身需要配合引用队列来释放
+   4. 典型例子：反射数据
+3. **弱引用（WeakRefernce）**
+   1. 例如：`WeakRefernce a = new WeakReference(new A());`
+   2. 如果仅有弱引用引用该对象时，只要发生垃圾回收，就会释放该对象
+   3. 弱引用自身需要配合引用队列来释放
+   4. 典型例子：`ThreadLocalMap`中的`Entry`对象
+4. **虚引用（PhantomReference）**
+   1. 例如：`PhantomReference a = new PhantomReference(new A());`
+   2. **必须配合引用队列一起使用**，当虚引用引用的对象被回收时，会将虚引用对象入队，由`Reference Handler`线程释放其关联的外部资源
+   3. 典型例子：`Cleaner`释放`DirectByteBuffer`占用的**直接内存**。java对象被收回后，释放其占用的外部资源
+
+![image-20250330144658933](.\imgs\image-20250330144658933.png)
+
+#### finalize方法的理解
+
+1. `finalize`是`Object`中的一个方法，子类重写它，垃圾回收时此方法会被调用，可以在其中进行一些资源释放和请理工作
+2. 但是，将资源释放和请理动作放在 `finalize` 方法中不好，非常影响性能，严重时甚至会引起OOM，从`Java9`开始就被标注为`@Deprecated`，不建议被使用
+
+- `unfinalized`队列
+  - 当重写了`finalize`方法的对象，在构造方法调用之时，JVM都会将其包装成一个`Finalizer`对象，并加入`unfinalized`队列中（静态成员变量、双向链表结构）
+- `ReferenceQueue`队列
+  - 第二个重要的队列，也是`Finalizer`类中一个静态成员变量，名为`queue`（是一个单向链表结构），刚开始是空的。当A对象可以被当作垃圾回收时，就会把这些A对象对应的`Finalizer`对象加入到这个队列。
+
+> 重写`finalize()`方法的对象在没人引用，**垃圾回收时也无法立刻回收它，因为`Finalizer`还在引用它，为的是在执行完`finalize()`方法后再回收。**
+
+- 底层是由一个叫做`Finalier`的守护线程调用的`finalize`方法。当所有非守护线程都结束时，守护线程也会结束，因此不能保证`finalize`一定被调用。
+- 如果`finalize()`方法中出现异常，是不会输出的。因为底层源码 `catch(Throwable e) {}`对任何异常都不做处理
+- <font color="red" size=4>垃圾回收时不会利用调用`finalize`方法，先把对象加入到ReferenceQueue，然后由Finazlier线程一个一个取出调用</font>
+
+![image-20250330200910005](.\imgs\image-20250330200910005.png)
+
 
 
 ### 4. 设计模式
@@ -902,6 +989,10 @@ public static ExecutorService newCachedThreadPool() {
 
 
 ## Spring
+
+
+
+
 
 Spring是如何解决循环依赖的？
 
@@ -914,7 +1005,8 @@ Spring是如何解决循环依赖的？
 > Spring通过**三级缓存**只解决了第三种循环依赖问题。
 >
 > 三级缓存指的是Spring在创建Bean的过程中，通过三级缓存来缓存正在创建的Bean，以及已经完成的Bean实例。
->
+
+
 
 ## MySQL
 
