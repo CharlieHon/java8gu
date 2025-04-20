@@ -20,6 +20,45 @@ Java动态代理？
 > 1. **JDK动态代理：基于接口实现，被代理类需要实现一个或多个接口**。JDK在运行时生成实现指定接口的代理类，并通过`InvocationHandler`拦截并增强方法调用。
 > 2. **CGLIB动态代理：基于继承实现，在运行时生成代理类的子类**，通过`MethodInterceptor`拦截目标方法并增强
 
+#### 注解
+
+注解本质上是一个继承了`Annotation`的特殊接口，所以注解也叫**声明式接口**，其具体实现类是Java运行时生成的动态代理对象。
+
+通过反射获取注解时，返回的是Java运行时生成的动态代理对象。通过动态代理对象调用自定义注解方法，会最终调用`AnnotationInvocationHandler`的`invoke`方法。
+
+根据注解的作用范围，Java注解可以分为以下几种类型：
+
+- **源码级别注解**：仅存在于源码中，编译后不会保留。
+  - `@Retention(RetentionPolicy.SOURCE)`
+  - 如`@Data`注解
+- **类文件级别注解**：保留在`.class`文件中，但运行时不可见
+  - `Retention(RetentionPolicy.CLASS)`
+- **运行时注解**：保留在`.class`文件中，并且可以通过反射在运行时访问
+  - `@Retention(RetentionPolicy.RUNTIME)`
+
+#### String
+
+1. 可变性。`String`是不可变的，一旦创建，内容无法修改，每次修改都会创建新的对象。`StringBuilder`和`StringBuffer`是可变的，可以直接对字符内容进行修改而不会创建新的对象
+2. 线程安全性：String因为不可变，天然线程安全。
+
+| 特性     | `String` | `StringBuilder` | `StringBuffer` |
+| -------- | -------- | --------------- | -------------- |
+| 不可变性 |          |                 |                |
+| 线程安全 |          |                 |                |
+| 性能     |          |                 |                |
+| 使用场景 |          |                 |                |
+
+#### Java8新特性
+
+- `Lambda`表达式：简化匿名内部类，支持函数式编程
+- 函数式接口：仅含一个抽象方法的接口，可用`@FunctionalInterface`注解标记
+- `Stream API`：提供链式操作主力聚合函数，支持并行处理
+- `Optinal`类：封装可能为`null`的对象，减少空指针异常
+
+
+
+
+
 ### 1. 集合
 
 
@@ -578,6 +617,268 @@ public ThreadPoolExecutor(
 > - CPU密集型任务（`N+1`）：这种任务消耗的主要是CPU资源，可以将线程设置为`N（CPU核心数）+ 1`。
 > - IO密集型任务（`2N`）：这种任务会用大部分的时间来处理I/O交互，而线程在处理I/O的时间段内不会占用CPU来处理，这时就可以将CPU交给其它线程使用。因此在I/O密集型任务的引用中，可以多配置一些线程，具体的计算方法是2N。
 
+#### AQS原理
+
+`AbstractQueuedSynchronizer`，是阻塞式锁和相关的同步器工具的框架
+
+特点：
+
+- 用`state`属性来表示资源的状态（分独占模式和共享模式），子类需要定义如何维护这个状态，控制如何获取锁和释放锁
+  - `getState`-获取状态
+  - `setState`-设置状态
+  - `compareAndSetState`-`cas`机制设置状态
+  - 独占模式是只有一个线程能够访问资源，而共享模式可以允许多个线程访问资源
+- 提供了基于`FIFO`的等待队列，类似于`Monitor`的`EntryList`
+- 条件变量来实现等待、唤醒机制，支持多个条件变量，类似于`Monitor`的`WaitSet`
+
+子类主要实现一些方法（默认抛出`UnsupportedOperationException`）
+
+- `tryAcquire`
+- `tryRelease`
+- `tryAcquireShared`
+- `tryReleaseShared`
+- `isHeldExclusively`
+
+##### 公平锁实现原理
+
+```java
+    /**
+     * Sync object for non-fair locks
+     */
+    static final class NonfairSync extends Sync {
+        private static final long serialVersionUID = 7316153563782823691L;
+
+        final boolean initialTryLock() {
+            Thread current = Thread.currentThread();
+            // 非公平锁，新线程直接尝试获取锁，不会管CLH队列中是否有之前阻塞的线程
+            if (compareAndSetState(0, 1)) { // first attempt is unguarded
+                setExclusiveOwnerThread(current);
+                return true;
+            } else if (getExclusiveOwnerThread() == current) {
+                int c = getState() + 1;
+                if (c < 0) // overflow
+                    throw new Error("Maximum lock count exceeded");
+                setState(c);
+                return true;
+            } else
+                return false;
+        }
+
+        /**
+         * Acquire for non-reentrant cases after initialTryLock prescreen
+         */
+        protected final boolean tryAcquire(int acquires) {
+            if (getState() == 0 && compareAndSetState(0, acquires)) {
+                setExclusiveOwnerThread(Thread.currentThread());
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Sync object for fair locks
+     */
+    static final class FairSync extends Sync {
+        private static final long serialVersionUID = -3000897897090466540L;
+
+        /**
+         * Acquires only if reentrant or queue is empty.
+         */
+        final boolean initialTryLock() {
+            Thread current = Thread.currentThread();
+            int c = getState();
+            if (c == 0) {
+                // 公平锁，队列中有其它线程会退出，即返回false
+                if (!hasQueuedThreads() && compareAndSetState(0, 1)) {
+                    setExclusiveOwnerThread(current);
+                    return true;
+                }
+            } else if (getExclusiveOwnerThread() == current) {
+                if (++c < 0) // overflow
+                    throw new Error("Maximum lock count exceeded");
+                setState(c);
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * Acquires only if thread is first waiter or empty
+         */
+        protected final boolean tryAcquire(int acquires) {
+            if (getState() == 0 && !hasQueuedPredecessors() &&
+                compareAndSetState(0, acquires)) {
+                setExclusiveOwnerThread(Thread.currentThread());
+                return true;
+            }
+            return false;
+        }
+    }
+```
+
+##### 5. 条件变量实现原理
+
+每个条件变量其实就对应着一个等待队列，其实现类是`ConditionObject`
+
+#### ReentrantReadWriteLock
+
+当读操作远远高于写操作，这时候使用`读写锁`让`读-读`可以并发，提高性能。`读写`、`写写`互斥
+
+读写锁用的是同一个`Sync`同步器，因此等待队列，`state`等也是同一个。
+
+因为`state`是读锁和写锁共用的，写锁状态占低16位，读锁使用高16位
+
+##### w.lock
+
+```java
+// 写锁
+@ReservedStackAccess
+protected final boolean tryAcquire(int acquires) {
+    /*
+     * Walkthrough:
+     * 1. If read count nonzero or write count nonzero
+     *    and owner is a different thread, fail.
+     * 2. If count would saturate, fail. (This can only
+     *    happen if count is already nonzero.)
+     * 3. Otherwise, this thread is eligible for lock if
+     *    it is either a reentrant acquire or
+     *    queue policy allows it. If so, update state
+     *    and set owner.
+     */
+    Thread current = Thread.currentThread();
+    int c = getState();
+    int w = exclusiveCount(c);
+    if (c != 0) {
+        // c != 0 有可能加写锁，有可能是读锁
+        // c != 0 && w == 0 说明加的是读锁
+        // c != 0 && w != 0 看已经加的写锁是否是当前线程加的
+        if (w == 0 || current != getExclusiveOwnerThread())
+            return false;
+        // 超过 65535 (16位二进制最大值)
+        if (w + exclusiveCount(acquires) > MAX_COUNT)
+            throw new Error("Maximum lock count exceeded");
+        // 可重入
+        setState(c + acquires);
+        return true;
+    }
+    // writerShouldBlock()
+    // 公平锁，会检查阻塞队列中是否有其它线程阻塞
+    // 非公平锁，直接返回false，然后直接执行 compareAndSetState 尝试加锁
+    if (writerShouldBlock() ||
+        !compareAndSetState(c, c + acquires))
+        return false;
+    setExclusiveOwnerThread(current);
+    return true;
+}
+```
+
+##### r.lock()
+
+```java
+@ReservedStackAccess
+protected final int tryAcquireShared(int unused) {
+    /*
+     * Walkthrough:
+     * 1. If write lock held by another thread, fail.
+     * 2. Otherwise, this thread is eligible for
+     *    lock wrt state, so ask if it should block
+     *    because of queue policy. If not, try
+     *    to grant by CASing state and updating count.
+     *    Note that step does not check for reentrant
+     *    acquires, which is postponed to full version
+     *    to avoid having to check hold count in
+     *    the more typical non-reentrant case.
+     * 3. If step 2 fails either because thread
+     *    apparently not eligible or CAS fails or count
+     *    saturated, chain to version with full retry loop.
+     */
+    Thread current = Thread.currentThread();
+    int c = getState();
+    // 是否加了写锁 && 写锁是否是当前线程持有
+    if (exclusiveCount(c) != 0 &&
+        getExclusiveOwnerThread() != current)
+        return -1;
+    // 读锁状态
+    int r = sharedCount(c);
+    if (!readerShouldBlock() &&
+        r < MAX_COUNT &&
+        compareAndSetState(c, c + SHARED_UNIT)) {
+        if (r == 0) {
+            firstReader = current;
+            firstReaderHoldCount = 1;
+        } else if (firstReader == current) {
+            firstReaderHoldCount++;
+        } else {
+            HoldCounter rh = cachedHoldCounter;
+            if (rh == null ||
+                rh.tid != LockSupport.getThreadId(current))
+                cachedHoldCounter = rh = readHolds.get();
+            else if (rh.count == 0)
+                readHolds.set(rh);
+            rh.count++;
+        }
+        return 1;
+    }
+    return fullTryAcquireShared(current);
+}
+```
+
+### w.unlock()
+
+```java
+// 释放写锁
+public void unlock() {
+    sync.release(1);
+}
+
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        // 从头结点开始唤醒CLH队列中阻塞的节点
+        signalNext(head);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Note that tryRelease and tryAcquire can be called by
+ * Conditions. So it is possible that their arguments contain
+ * both read and write holds that are all released during a
+ * condition wait and re-established in tryAcquire.
+ */
+@ReservedStackAccess
+protected final boolean tryRelease(int releases) {
+    if (!isHeldExclusively())
+        throw new IllegalMonitorStateException();
+    int nextc = getState() - releases;
+    boolean free = exclusiveCount(nextc) == 0;
+    if (free)
+        setExclusiveOwnerThread(null);
+    setState(nextc);
+    return free;
+}
+
+/**
+ * 唤醒后继节点
+ * Wakes up the successor of given node, if one exists, and unsets its
+ * WAITING status to avoid park race. This may fail to wake up an
+ * eligible thread when one or more have been cancelled, but
+ * cancelAcquire ensures liveness.
+ */
+private static void signalNext(Node h) {
+    Node s;
+    if (h != null && (s = h.next) != null && s.status != 0) {
+        s.getAndUnsetStatus(WAITING);
+        LockSupport.unpark(s.waiter);
+    }
+}
+```
+
+
+
+
+
 ### 3. JVM
 
 虚拟机栈和本地方法栈为什么是私有的？
@@ -995,7 +1296,8 @@ public static ExecutorService newCachedThreadPool() {
 `refresh`的12个步骤
 
 1. `prepareRefresh`
-2. 
+2. `obtainFreshBeanFactory`
+3. `prepareBeanFactory`
 
 #### 1. prepareRefresh
 
@@ -1006,15 +1308,13 @@ public static ExecutorService newCachedThreadPool() {
 > - `systemEnvironment`
 > - 自定义`Properties`
 
-
-
 #### 2. obtainFreshBeanFactory
 
 总结
 
 - `BeanFactory`的作用是负责`bean`的创建、依赖注入和初始化
 - `BeanDefinition`作为`bean`的设计蓝图，规定了`bean`的特征，如单例多例、依赖关系、初始销毁方法等
-- `BeanDefinition`的来源多种多样，可以通过xml获得，通过配置类获得、通过组件扫描获得，也可以是变成添加
+- `BeanDefinition`的来源多种多样，可以通过`xml`获得，通过配置类获得、通过组件扫描获得，也可以是变成添加
 
 #### 3. prepareBeanFactory
 
@@ -1928,15 +2228,92 @@ InnoDB对LRU做了一些优化，普通LRU算法通常是将最近查询的数�
 
 ## Redis
 
+Redis(Remote Dictionary Server)，基于内存的k-v非关系型数据库
+
+### 常见面试题
+
+#### Redis和Memcached有什么区别？
+
+Redis和Memcached共同点：
+
+1. 都是基于内存的数据库，一般都用来当作缓存使用
+2. 都有过期策略
+3. 两者的性能都非常高
+
+Redis和Memcached区别：
+
+1. Redis支持的数据类型更丰富（String、Hash、List、Set、ZSet），
+   1. 而Memcached只支持最简单的key-value数据类型
+2. Redis支持数据的持久化，可以将内存中的数据保存到磁盘中，重启的时候可以再次加载进行使用；
+   1. Memcached没有持久化功能，数据全部存在内存中，重启或者宕机后数据丢失
+3. Redis原生支持集群模式
+   1. Memcached没有原生的集群模式，需要依靠客户端来实现往集群中分片写入数据
+4. Redis支持发布订阅模型、Lua脚本、事务等功能
+   1. Memcached不支持
+
+### 为什么用Redis作为MySQL的缓存？
+
+1. Redis具备高性能
+   1. 假如用户第一次访问MySQL中的某些数据，这个过程会比较慢，因为是从硬盘上读取的。将用户访问的数据缓存到Redis中，下次再访问这些数据时直接从缓存中获取，操作Redis缓存就是直接操作内存，所以速度很快
+2. Redis具备高并发
+   1. 单台设备的Redis的QPS是MySQL的10倍，Redis单机的QPS能轻松破10w，而MySQL单机的QPS很难破1w
+   2. 直接访问Redis能够承受的请求是远远大于直接访问MySQL的，所以可以考虑把数据库中的部分数据转移到缓存中去，这样用户的一部分请求会直接到缓存这里而不用经过数据库
+
+#### Redis数据结构
+
+- `string`：缓存对象、常规计数、分布式锁
+- `List`：消息队列
+- `Hash`：缓存对象、购物车
+- `Set`：聚合计算（并集、交集、差集）场景，比如点赞、共同关注、抽奖活动等
+- `Zset`：排序场景，比如排行榜、电话和姓名排序
+- `BitMap`：二值状态统计的场景，比如签到、判断用户登录状态、连续签到用户的总数
+- `HyperLogLog`：海量数据基数统计的场景，比如百万计网页UV计数等
+
+```c
+/* Note: sdshdr5 is never used, we just access the flags byte directly.
+ * However is here to document the layout of type 5 SDS strings. */
+struct __attribute__ ((__packed__)) sdshdr5 {
+    unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr8 {
+    uint8_t len; /* used */
+    uint8_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr16 {
+    uint16_t len; /* used */
+    uint16_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr32 {
+    uint32_t len; /* used */
+    uint32_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr64 {
+    uint64_t len; /* used */
+    uint64_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+```
+
+
+
 ### 1. 数据类型
 
 Redis基本数据类型
 
 > Redis常见的五种数据类型：**String字符串、Hash哈希、List列表、Set集合、Zset有序集合**。
 
-- `string`：缓存对象、常规计数、分布式锁
-
-
+- 获取字符串长度的时间复杂度O(1)
+- 支持动态扩容
+- 减少内存分配次数
+- 二进制安全，根据len判断字符串长度，可以存储任意字符
 
 ### 2. 持久化
 
@@ -2228,6 +2605,175 @@ TLS在实现上分为**握手协议**和**记录协议**两层：
 
 
 ### 2. TCP
+
+#### 2.1 TCP三次握手与四次挥手
+
+##### TCP基本认识
+
+![TCP 头格式](https://cdn.xiaolincoding.com//mysql/other/format,png-20230309230534096.png)
+
+**序列号**：在建立连接时由计算机生成的随机数作为其初始值，通过`SYN`包传给接收端主机，每发送一次数据，就**累加**一次该**数据字节数**的大小。<font color="pink">用来解决网络包乱序问题</font>
+
+**确认应答号**：指下一次期望收到的数据的序列号，发送端收到这个确认应答以后可以认为在这个序号以前的数据都已经被正常接收。<font color="pink">用来解决丢包的问题</font>
+
+**控制位**：
+
+- `ACK`(Acknowledgment，确认标志)：该位为1时，确认应答的字段变为有效，TCP规定除了最初建立连接的`SYN`包之外该位必须设置为1
+- `RST`(Reset，复位标志)：表示TCP连接中出现异常必须强制断开连接
+- `SYN`(Synchronize，同步标志)：表示希望建立连接，并在其**序列号**的字段进行序列号初始值的设定
+- `FIN`(Finish，结束标志)：表示今后不会再有数据发送，希望断开连接。当通信结束希望断开连接时，通信双方的主机之间就可以相互交换`FIN`位为1的TCP段。
+
+##### 为什么需要TCP协议？TCP工作在那一层？
+
+TCP是一个工作在**传输层**的**可靠**数据传输的服务，它能确保接收端接收的网络包是**无损坏、无间隔、非冗余和按序的**。
+
+TCP是<font color="red" size=4>面向连接的、可靠的、基于字节流</font>的传输层控制协议。
+
+- 面向连接：一定是**一对一**才能连接，不能像UDP协议可以一个主机同时向多个主机发送消息，也就是一对多是无法做到的
+- 可靠的：无论网络链路出现了怎么样的链路变化，TCP可以保证一个报文一定能够达到接收端
+- 字节流：
+
+> Connections: The reliability and flow control mechanisms described above require that TCPs initialize ans maintain certain status information for each data stream. The combination of this information, including sockets, sequence numbers, and window sizes, is called a connections.
+>
+> 连接：用于保证可靠性和流量控制维护的某些状态信息，这些信息的组合，包括socket、序列号和窗口大小称为连接
+
+<font color="red" size=4>建立一个TCP连接需要客户端与服务端达成上述三个信息的共识：</font>
+
+- `Socket`：由IP地址和端口号 组成
+- `序列号`：用来解决乱序问题等
+- `窗口大小`：用来做流量控制
+
+##### 如何唯一确定一个TCP连接？
+
+TCP四元组可以唯一的确定一个连接，四元素包括如下：
+
+- **源地址**
+- **源端口号**
+- **目的地址**
+- **目的端口**
+
+源地址和目的地址的字段（32位）是在IP头部中，作用是通过IP协议发送报文给对方主机。源端口和目的端口的字段（16位）是在TCP头部中，作用是告诉TCP协议应该把报文发给哪个进程。
+
+<font color="red" size=5>一个IP的服务端监听了一个端口，它的TCP的最大连接数是多少？</font>
+
+服务端通常固定在某个本地端口上监听，等待客户端的连接请求
+
+因此，客户端IP和端口是可变的，其理论值计算公式：$最大TCP连接数 = 客户端IP数 × 客户端的端口数$
+
+服务端最大并发TCP连接数会受以下 因素影响：
+
+- **文件描述符限制**：每个TCP连接 都是一个文件，如果文件描述符被沾满了，会发生`Too many open files`
+- **内存限制**：每个TCP连接都要占用一定内存，操作系统的内存是有限的，如果内存资源被占满后，会发生PPM
+
+##### UDP和TCP有什么区别？分别的应用场景是？
+
+UDP不提供复杂的控制机制，利用IP提供**面向无连接**的通信服务
+
+UDP协议非常简单，头部只有8个字节（64位）：源端口号（16位）、目标端口号（16位）、包长度（16位）、校验和（16位）
+
+<font color="red" size=4>TCP和UDP区别：</font>
+
+1. 连接：
+   1. TCP是面向连接的传输层协议，创数数据前先建立连接
+   2. UDP是不需要连接，即可传输数据
+2. 服务对象
+   1. TCP是一对一的两点服务，即一条连接只有两个端点
+   2. UDP支持一对一、一对多、多对多的交互通信
+3. 可靠性
+   1. TCP是可靠交付数据的，数据可以无差错、不丢失、不重复、按需到达
+   2. UDP是尽最大努力交互，不保证可靠交付数据。
+4. 拥塞控制、流量控制
+   1. TCP有拥塞控制和流量控制机制，保证数据传输的安全性
+   2. UDP则没有，即使网络非常堵塞，也不会影响UDP的发送速率
+5. 首部开销
+   1. TCP首部较长，会有一定的开销
+   2. UDP首部只有8个字节，并且是固定不变的，开销较小
+6. 传输方式：
+   1. TCP是流式传输，没有边界，但保证顺序和可靠
+   2. UDP是一个包一个包的发送，是有边界的，但可能会丢包和乱序
+7. 分片不同
+   1. TCP的数据包大小如果大于MSS大小，则会在传输层进行分片，目标主机收到后，也同样在传输层组装TCP数据包。如果中途丢失了一个分片，只需要传输丢失的这个分片
+   2. UDP的数据大小如果大于MTU大小，则会在IP层进行分片，目标主机收到后，在IP层组装完数据，接着再传给传输层
+
+<font color="red" size=4>TCP和UDP应用场景</font>
+
+- 由于TCP是面向连接，能够保证数据的可靠交付
+  - `FTP`文件传输
+  - `HTTP/HTTPS`
+- UDP面向无连接，可以随试发送数据，再加上UDP本身的处理既简单又高效
+  - 包总量较少的通信，如`DNS`、`SNMP`
+  - 视频、音频等多媒体通信
+  - 广播通信
+
+##### TCP和UDP可以使用同一个端口吗？
+
+- **可以**
+
+传输层的**端口号**的作用，是为了区分同一个主机上不同应用程序的数据包。而传输层的两个协议TCP和UDP，在内核中是两个完全独立的软件模块。
+
+**当主机收到数据包后，可以在IP包头的协议号字段直到该数据包是TCP/UDP，所以可以根据这个信息确定发给哪个模块（TCP/UDP）处理，送给TCP/UDP模块的报文根据端口号确定送给哪个应用程序处理**
+
+
+
+##### TCP连接建立
+
+TCP是面向连接的协议，所以使用TCP前必须先建立连接，而**建立连接是通过三次握手来进行的**。
+
+**TCP首部结构（20字节基础部分+可选选项）**
+
+```
+ 0                   1                   2                   3   
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|          Source Port          |       Destination Port        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Sequence Number                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    Acknowledgment Number                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|  Data |           |U|A|P|R|S|F|                               |
+| Offset| Reserved  |R|C|S|S|Y|I|            Window             |
+|       |           |G|K|H|T|N|N|                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Checksum            |         Urgent Pointer        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    Options (可选，最多40字节)                  |
+|                             ...                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+![TCP 三次握手](https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost4/%E7%BD%91%E7%BB%9C/TCP%E4%B8%89%E6%AC%A1%E6%8F%A1%E6%89%8B.drawio.png)
+
+| ![第一个报文 —— SYN 报文](https://cdn.xiaolincoding.com//mysql/other/format,png-20230309230500953.png) | ![第二个报文 —— SYN + ACK 报文](https://cdn.xiaolincoding.com//mysql/other/format,png-20230309230504118.png) | ![第三个报文 —— ACK 报文](https://cdn.xiaolincoding.com//mysql/other/format,png-20230309230508297.png) |
+| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
+
+1. 一开始，客户端和服务端都处于`CLOSE`状态。先是服务端主动监听某个端口，处于`LISTEN`状态
+2. 客户端会随机初始化序号（`client_isn`），将此序号置于TCP首部的**序号**字段中，同时把`SYN`标志位置为`1`，表示`SYN`报文。接着把第一个`SYN`报文发送给服务端，表示向服务端发起连接，该报文不包含应用层数据，之后客户端处于`SYN_SENT`状态
+3. 服务端收到客户端的`SYN`报文后，首先把服务端也随机初始化自己的序号（`server_isn`），将此序号填入TCP首部的**序号**字段中，其次TCP首部的**确认应答号**字段填入`client_isn + 1`，接着把`SYN`和`ACK`标志位置为`1`。最后把该报文发送给客户端，该报文也不包含应用层数据，之后服务端处于`SYN_RCVD`状态。
+4. 客户端收到服务端报文之后，还要向服务端回应最后一个应答报文，首先应答报文TCP首部`ACK`标志位置为`1`，其次**确认应答号**字段填入`server_isn + 1`，最后把报文发送给服务端，这次报文可以携带客户端到服务端的数据，之后客户端处于`ESTABLISHED`状态。
+5. 服务端收到客户端的应答报文之后，也进入`ESTABLISH`状态
+
+<font color="red" size=4>第三次握手是可以携带数据的，前两次握手是不可以携带数据的</font>
+
+> 如何在Linux系统中查看TCP状态：`netstat -napt`
+>
+> ![TCP 连接状态查看](https://cdn.xiaolincoding.com//mysql/other/format,png-20230309230520683.png)
+
+##### 为什么是三次握手？不是两次、四次？
+
+TCP连接：用于保证可靠性和流量控制维护的某些状态信息，这些信息的组合，包括**Socket、序列号和窗口大小**称为连接。
+
+
+
+
+
+##### TCP连接断开
+
+
+
+##### Socket编程
+
+
 
 
 
@@ -4372,7 +4918,7 @@ public Result seckillVoucher(Long voucherId) {
 // 2. hexists 判断 lockKey 中的线程标识(ARGV[2])是否是当前线程
 // 如果是，则计数加1。并更新过期时间
 // 3. 如果以上两个条件都不满足，则返回 锁过期时间，退出抢锁逻辑
-// 4. 如果返回 nil，则代表对应前两个条件；如果返回的不是null，则走第三个分支，在源码处会进行while(true)的自旋抢锁。
+// 4. 如果返回 nil，则代表对应前两个条件成立；如果返回的不是null，则走第三个分支，在源码处会进行while(true)的自旋抢锁。
 "if (redis.call('exists', KEYS[1]) == 0) then " +
                   "redis.call('hset', KEYS[1], ARGV[2], 1); " +
                   "redis.call('pexpire', KEYS[1], ARGV[1]); " +
